@@ -1,0 +1,40 @@
+# environment.yml
+name: triage
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.11
+  - pytorch
+  - torchvision
+  - pip
+  - pip:
+      # --- GCP clients ---
+      - google-cloud-aiplatform>=1.70 # Vertex AI (Model Garden, endpoints)
+      - google-cloud-storage
+      - google-cloud-firestore
+      - google-cloud-bigquery
+      - google-cloud-pubsub
+      - google-cloud-secret-manager
+      - google-cloud-run
+
+      # --- LLM SDK (Claude via Vertex Model Garden) ---
+      - anthropic[vertex] # lets you call Claude through Vertex; swap to vertexai.generative_models for Gemini calls
+
+      # --- vision / tools (classifier, detector, SAM) ---
+      - ultralytics # YOLO-style detector, matches your DOTA/xView fine-tuning experience
+      - segment-anything # SAM
+      - opencv-python-headless
+      - pillow
+      - numpy
+      - shapely # tile adjacency / polygon geometry for Agent 2
+      - networkx # adjacency graph + zone clustering
+
+      # --- dev tooling ---
+      - pytest
+      - pytest-cov
+      - pytest-asyncio # you'll want this once tool-selection loops are async
+      - ruff # lint + format in one tool
+      - mypy
+      - python-dotenv
+      - pre-commit

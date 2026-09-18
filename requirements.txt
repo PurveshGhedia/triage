@@ -1,0 +1,29 @@
+# --- GCP clients ---
+google-cloud-aiplatform>=1.70
+google-cloud-storage
+google-cloud-firestore
+google-cloud-bigquery
+google-cloud-pubsub
+google-cloud-secret-manager
+google-cloud-run
+
+# --- LLM SDK ---
+anthropic[vertex]
+
+# --- vision / tools ---
+ultralytics
+segment-anything
+opencv-python-headless
+pillow
+numpy
+shapely
+networkx
+
+# --- dev tooling ---
+pytest
+pytest-cov
+pytest-asyncio
+ruff
+mypy
+python-dotenv
+pre-commit
