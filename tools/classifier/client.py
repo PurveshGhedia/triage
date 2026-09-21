@@ -18,6 +18,7 @@ DAMAGE_LABELS = ["no-damage", "minor-damage", "major-damage", "destroyed"]
 
 class ClassifierClient(ToolClient):
     name = "classifier"
+    description = "General-purpose damage severity classifier (no-damage/minor/major/destroyed)."
 
     def __init__(self, use_mock: bool | None = None) -> None:
         self.use_mock = (

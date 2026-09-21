@@ -82,7 +82,8 @@ def test_round_robin_selector_never_repeats_a_tried_tool():
     history = [ToolCallRecord(tool_name="classifier", confidence=0.3, label="minor-damage")]
     tools = [FakeTool("classifier", 0.9), FakeTool("detector", 0.9)]
 
-    selected = round_robin_selector(history, tools)
+    selected, reasoning = round_robin_selector(history, tools)
 
     assert selected is not None
     assert selected.name == "detector"
+    assert reasoning is None  # round-robin has no reasoning to give — LLM selector does

@@ -2,6 +2,8 @@
 
 Covers PER-04 (structured output completeness): every assessment must carry
 damage severity, confidence, and the full tool-call history, not just a label.
+`selection_reasoning` additionally captures *why* each tool was chosen, for
+traceability (SYS-02, SEC-03).
 """
 from __future__ import annotations
 
@@ -24,11 +26,19 @@ class ToolCallRecord(BaseModel):
     tool_name: str
     confidence: float
     label: str
+    selection_reasoning: str | None = None
     called_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
-    def from_tool_result(cls, result: ToolResult) -> "ToolCallRecord":
-        return cls(tool_name=result.tool_name, confidence=result.confidence, label=result.label)
+    def from_tool_result(
+        cls, result: ToolResult, selection_reasoning: str | None = None
+    ) -> "ToolCallRecord":
+        return cls(
+            tool_name=result.tool_name,
+            confidence=result.confidence,
+            label=result.label,
+            selection_reasoning=selection_reasoning,
+        )
 
 
 class TileAssessment(BaseModel):

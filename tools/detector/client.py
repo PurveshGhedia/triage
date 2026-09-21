@@ -15,6 +15,10 @@ ACCESS_LABELS = ["access-clear", "access-degraded", "access-blocked"]
 
 class DetectorClient(ToolClient):
     name = "detector"
+    description = (
+        "Object detector for roads, bridges, and buildings — best when access/"
+        "infrastructure state matters, not just overall damage severity."
+    )
 
     def __init__(self, use_mock: bool | None = None) -> None:
         self.use_mock = (

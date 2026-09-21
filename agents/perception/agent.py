@@ -1,13 +1,13 @@
 """Agent 1 — Perception: per-tile tool-selection loop with confidence-driven retry.
 
-NOTE ON AGENTIC DESIGN (see project design principles): the `tool_selector`
-passed into PerceptionAgent is where the LLM should reason over tool-call
-history to pick the next tool (Option A — LLM-directed, not a rule-based
-workflow). The default `round_robin_selector` below is a placeholder so the
-loop and its tests can run locally before the Vertex AI LLM call is wired in.
-Swap it for a real selector via `tool_selector=` once Claude/Gemini
-tool-selection is implemented — the loop itself doesn't change. Do not treat
-the placeholder as the final design; it is intentionally not "agentic" yet.
+The `tool_selector` is where the real agentic decision happens (see project
+design principles: LLM-directed, not rule-based). `round_robin_selector` below
+is a placeholder — swap in `agents.perception.llm_selector.make_llm_tool_selector`
+via `tool_selector=` for the real design; the loop itself doesn't change.
+
+A selector returns (next_tool, reasoning): `reasoning` is optional free text
+explaining the pick, captured on the resulting ToolCallRecord for audit trails
+(SYS-02). Returns (None, None) once no untried tool remains.
 """
 from __future__ import annotations
 
@@ -18,23 +18,25 @@ from shared.tool_interface import ToolClient, ToolResult
 
 CONFIDENCE_THRESHOLD = 0.75
 
-ToolSelector = Callable[[list[ToolCallRecord], list[ToolClient]], "ToolClient | None"]
+ToolSelector = Callable[
+    [list[ToolCallRecord], list[ToolClient]], "tuple[ToolClient | None, str | None]"
+]
 
 
 def round_robin_selector(
     history: list[ToolCallRecord], available_tools: list[ToolClient]
-) -> ToolClient | None:
+) -> tuple[ToolClient | None, str | None]:
     """Placeholder selector: try each untried tool once, in a fixed order.
 
     Guarantees PER-01 (never retries the same tool) but is NOT the final
-    design — replace with an LLM call reasoning over `history` before this
-    counts as agentic tool selection.
+    design — replace with an LLM-directed selector (see llm_selector.py)
+    before this counts as agentic tool selection.
     """
     tried = {record.tool_name for record in history}
     for tool in available_tools:
         if tool.name not in tried:
-            return tool
-    return None  # all tools exhausted
+            return tool, None
+    return None, None  # all tools exhausted
 
 
 class PerceptionAgent:
@@ -61,7 +63,7 @@ class PerceptionAgent:
         best_result: ToolResult | None = None
 
         while True:
-            tool = self.tool_selector(history, self.tools)
+            tool, reasoning = self.tool_selector(history, self.tools)
             if tool is None:
                 # PER-03: retries exhausted without reaching threshold -> escalate
                 # rather than emitting a final low-confidence assessment.
@@ -76,7 +78,7 @@ class PerceptionAgent:
                 )
 
             result = tool.run(tile_path)
-            history.append(ToolCallRecord.from_tool_result(result))
+            history.append(ToolCallRecord.from_tool_result(result, selection_reasoning=reasoning))
 
             if best_result is None or result.confidence > best_result.confidence:
                 best_result = result

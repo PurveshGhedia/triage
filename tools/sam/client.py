@@ -16,6 +16,10 @@ DAMAGE_LABELS = ["no-damage", "partial-damage", "severe-damage"]
 
 class SAMClient(ToolClient):
     name = "sam"
+    description = (
+        "Zero-shot segmentation fallback — best for ambiguous or heavily "
+        "occluded tiles where the classifier and detector both struggle."
+    )
 
     def __init__(self, use_mock: bool | None = None) -> None:
         self.use_mock = (
