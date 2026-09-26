@@ -1,15 +1,18 @@
 """Run Agent 1 over a local directory of tile images and persist the results.
 
 Usage:
-    python scripts/run_local_batch.py --tiles-dir data/sample_tiles
-    python scripts/run_local_batch.py --tiles-dir data/sample_tiles --dry-run
-    python scripts/run_local_batch.py --tiles-dir data/sample_tiles --use-llm-selector
+    python -m scripts.run_local_batch --tiles-dir data/sample_tiles
+    python -m scripts.run_local_batch --tiles-dir data/sample_tiles --dry-run
+    python -m scripts.run_local_batch --tiles-dir data/sample_tiles --use-llm-selector
 
 By default uses the round-robin placeholder selector (free, fully offline)
 and writes each TileAssessment to Firestore. --dry-run prints results instead
-of writing anywhere. --use-llm-selector switches to the real Claude-on-Vertex
-selector (one LLM call per tool-selection decision — small but nonzero cost;
-needs `gcloud auth application-default login` and .env configured).
+of writing anywhere. --use-llm-selector switches to the real LLM-directed
+selector via Gemini on Vertex AI — Gemini specifically, not Claude, because
+Gemini is Google's own first-party model and is covered by the GCP $300 Free
+Trial credit; Claude on Vertex is a third-party "partner model" (MaaS) that
+the credit explicitly excludes. Needs `gcloud auth application-default
+login` and .env configured (GCP_PROJECT_ID, VERTEX_AI_LOCATION).
 
 Optional geolocation: pass --geo-file pointing at a JSON file shaped like
     {"tile_001": {"latitude": 12.3, "longitude": 45.6}, ...}
@@ -52,9 +55,9 @@ def build_agent(use_llm_selector: bool) -> PerceptionAgent:
     tools = [ClassifierClient(), DetectorClient(), SAMClient()]
     if use_llm_selector:
         from agents.perception.llm_selector import make_llm_tool_selector
-        from shared.claude_vertex_client import ClaudeVertexClient
+        from shared.gemini_vertex_client import GeminiVertexClient
 
-        selector = make_llm_tool_selector(ClaudeVertexClient())
+        selector = make_llm_tool_selector(GeminiVertexClient())
         return PerceptionAgent(tools=tools, tool_selector=selector)
     return PerceptionAgent(tools=tools, tool_selector=round_robin_selector)
 
@@ -72,8 +75,7 @@ def main() -> None:
 
     tiles = find_tiles(args.tiles_dir)
     if not tiles:
-        sys.exit(
-            f"No tile images found in {args.tiles_dir} (looked for {TILE_EXTENSIONS})")
+        sys.exit(f"No tile images found in {args.tiles_dir} (looked for {TILE_EXTENSIONS})")
 
     geo = load_geo(args.geo_file)
     agent = build_agent(args.use_llm_selector)
@@ -109,8 +111,7 @@ def main() -> None:
         if store is not None:
             store.save(assessment)
 
-    print(
-        f"\nDone: {assessed} assessed, {escalated} escalated, {len(tiles)} total.")
+    print(f"\nDone: {assessed} assessed, {escalated} escalated, {len(tiles)} total.")
     if args.dry_run:
         print("(dry run — nothing written to Firestore)")
 

@@ -6,6 +6,7 @@ google-cloud-bigquery
 google-cloud-pubsub
 google-cloud-secret-manager
 google-cloud-run
+google-genai
 
 # --- LLM SDK ---
 anthropic[vertex]
