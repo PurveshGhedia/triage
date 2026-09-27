@@ -19,6 +19,8 @@ CLAUDE_MODEL_ID = os.getenv("CLAUDE_MODEL_ID", "claude-sonnet-4-6")
 GEMINI_MODEL_ID = os.getenv("GEMINI_MODEL_ID", "gemini-2.5-flash")
 
 FIRESTORE_COLLECTION_TILES = os.getenv("FIRESTORE_COLLECTION_TILES", "tile_assessments")
+BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "triage")
+BIGQUERY_TABLE_ZONES = os.getenv("BIGQUERY_TABLE_ZONES", "zone_rankings")
 
 USE_MOCK_TOOLS = os.getenv("USE_MOCK_TOOLS", "true").lower() == "true"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

@@ -30,6 +30,13 @@ class TileAssessmentStore:
         doc = self._client.collection(self._collection).document(tile_id).get()
         return doc.to_dict() if doc.exists else None
 
+    def list_all(self) -> list[TileAssessment]:
+        """Reads every tile assessment currently in Firestore, reconstructed
+        as TileAssessment objects — this is Agent 2's actual input.
+        """
+        docs = self._client.collection(self._collection).stream()
+        return [TileAssessment.model_validate(doc.to_dict()) for doc in docs]
+
     @staticmethod
     def _to_firestore_dict(assessment: TileAssessment) -> dict:
         """Pure serialization helper — no client involved, so this is unit-
