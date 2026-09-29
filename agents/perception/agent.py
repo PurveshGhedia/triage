@@ -69,6 +69,7 @@ class PerceptionAgent:
                 # rather than emitting a final low-confidence assessment.
                 return TileAssessment(
                     tile_id=tile_id,
+                    tile_path=tile_path,
                     latitude=latitude,
                     longitude=longitude,
                     status=TileStatus.ESCALATED,
@@ -89,6 +90,7 @@ class PerceptionAgent:
 
         return TileAssessment(
             tile_id=tile_id,
+            tile_path=tile_path,
             latitude=latitude,
             longitude=longitude,
             status=TileStatus.ASSESSED,

@@ -3,7 +3,9 @@
 Covers PER-04 (structured output completeness): every assessment must carry
 damage severity, confidence, and the full tool-call history, not just a label.
 `selection_reasoning` additionally captures *why* each tool was chosen, for
-traceability (SYS-02, SEC-03).
+traceability (SYS-02). `tile_path` is stored so a later re-inspection (SYS-01)
+can find and reprocess the same image — without it, a dispatched re-inspection
+has nothing to actually re-run against.
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ class TileAssessment(BaseModel):
     """Final Agent 1 output for a single tile — written to Firestore."""
 
     tile_id: str
+    tile_path: str | None = None  # needed so SYS-01 re-inspection can reprocess this tile
     latitude: float | None = None
     longitude: float | None = None
     status: TileStatus
