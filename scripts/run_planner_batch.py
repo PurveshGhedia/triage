@@ -8,6 +8,7 @@ Usage:
     python -m scripts.run_planner_batch
     python -m scripts.run_planner_batch --batch-id guatemala-volcano
     python -m scripts.run_planner_batch --version 2
+    python -m scripts.run_planner_batch --expected-tiles 50 --wait-timeout-s 300
     python -m scripts.run_planner_batch --dry-run
     python -m scripts.run_planner_batch --use-bigquery
     python -m scripts.run_planner_batch --use-llm-selector
@@ -34,8 +35,10 @@ import argparse
 from agents.perception.agent import PerceptionAgent, round_robin_selector
 from agents.perception.schemas import DEFAULT_BATCH_ID
 from agents.planner.agent import TriagePlanner
+from shared.batch_wait import wait_for_batch
 from shared.firestore_client import TileAssessmentStore
 from shared.live_reinspection_dispatcher import LiveReinspectionDispatcher
+from shared.tile_validation import validate_tile_image
 from tools.classifier.client import ClassifierClient
 from tools.detector.client import DetectorClient
 from tools.sam.client import SAMClient
@@ -48,8 +51,12 @@ def build_reinspection_agent(use_llm_selector: bool) -> PerceptionAgent:
         from shared.gemini_vertex_client import GeminiVertexClient
 
         selector = make_llm_tool_selector(GeminiVertexClient())
-        return PerceptionAgent(tools=tools, tool_selector=selector)
-    return PerceptionAgent(tools=tools, tool_selector=round_robin_selector)
+        return PerceptionAgent(
+            tools=tools, tool_selector=selector, tile_validator=validate_tile_image
+        )
+    return PerceptionAgent(
+        tools=tools, tool_selector=round_robin_selector, tile_validator=validate_tile_image
+    )
 
 
 def main() -> None:
@@ -57,13 +64,26 @@ def main() -> None:
     parser.add_argument("--adjacency-radius-m", type=float, default=500.0)
     parser.add_argument("--batch-id", default=DEFAULT_BATCH_ID)
     parser.add_argument("--version", type=int, default=1)
+    parser.add_argument(
+        "--expected-tiles", type=int, default=None,
+        help="How many tiles this batch should contain. If fewer have reported, the "
+             "planner waits up to --wait-timeout-s, then plans with what it has (SYS-04).",
+    )
+    parser.add_argument("--wait-timeout-s", type=float, default=0.0)
+    parser.add_argument("--poll-interval-s", type=float, default=5.0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--use-bigquery", action="store_true")
     parser.add_argument("--use-llm-selector", action="store_true")
     args = parser.parse_args()
 
     tile_store = TileAssessmentStore()
-    tiles = tile_store.list_by_batch(args.batch_id)
+    readiness = wait_for_batch(
+        lambda: tile_store.list_by_batch(args.batch_id),
+        expected=args.expected_tiles,
+        timeout_s=args.wait_timeout_s,
+        poll_interval_s=args.poll_interval_s,
+    )
+    tiles = readiness.tiles
     if not tiles:
         print(
             f"No tile assessments found in Firestore for batch '{args.batch_id}'. "
@@ -71,7 +91,14 @@ def main() -> None:
         )
         return
 
-    print(f"Batch '{args.batch_id}': loaded {len(tiles)} tile assessment(s) from Firestore.\n")
+    print(f"Batch '{args.batch_id}': loaded {len(tiles)} tile assessment(s) from Firestore.")
+    if readiness.incomplete:
+        # SYS-04: never block on a tile that isn't coming — plan with what reported.
+        print(
+            f"WARNING: planning with {len(tiles)} of {readiness.expected} expected tiles "
+            f"({readiness.missing} never reported). Their zones are NOT in this ranking."
+        )
+    print()
 
     reinspection_agent = build_reinspection_agent(args.use_llm_selector)
     dispatcher = LiveReinspectionDispatcher(agent=reinspection_agent, tile_store=tile_store)

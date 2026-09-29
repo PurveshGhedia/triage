@@ -20,6 +20,9 @@ of tiles) so Agent 2 can plan each batch in isolation (SYS-05). Defaults to
 "default". Tile ids must be unique across batches, since the Firestore document
 id is the tile id (xBD filenames embed the disaster name, so they are).
 
+Unreadable tile images and failing tools never crash the run: the tile is
+escalated with a reason (FLT-01/02) and the batch carries on.
+
 Optional geolocation: pass --geo-file pointing at a JSON file shaped like
     {"tile_001": {"latitude": 12.3, "longitude": 45.6}, ...}
 Tiles not listed there get no geolocation — Agent 2 will surface them for
@@ -40,6 +43,7 @@ from pathlib import Path
 
 from agents.perception.agent import PerceptionAgent, round_robin_selector
 from agents.perception.schemas import DEFAULT_BATCH_ID, TileStatus
+from shared.tile_validation import validate_tile_image
 from tools.classifier.client import ClassifierClient
 from tools.detector.client import DetectorClient
 from tools.sam.client import SAMClient
@@ -64,8 +68,12 @@ def build_agent(use_llm_selector: bool) -> PerceptionAgent:
         from shared.gemini_vertex_client import GeminiVertexClient
 
         selector = make_llm_tool_selector(GeminiVertexClient())
-        return PerceptionAgent(tools=tools, tool_selector=selector)
-    return PerceptionAgent(tools=tools, tool_selector=round_robin_selector)
+        return PerceptionAgent(
+            tools=tools, tool_selector=selector, tile_validator=validate_tile_image
+        )
+    return PerceptionAgent(
+        tools=tools, tool_selector=round_robin_selector, tile_validator=validate_tile_image
+    )
 
 
 def main() -> None:
@@ -115,8 +123,11 @@ def main() -> None:
         print(
             f"{tile_id}: {assessment.status.value}"
             f" (severity={assessment.damage_severity}, confidence={assessment.confidence},"
-            f" tool_calls={len(assessment.tool_call_history)})"
+            f" tool_calls={len(assessment.tool_call_history)},"
+            f" tool_errors={len(assessment.tool_errors)})"
         )
+        if assessment.failure_reason:
+            print(f"    reason: {assessment.failure_reason}")
 
         if store is not None:
             store.save(assessment)

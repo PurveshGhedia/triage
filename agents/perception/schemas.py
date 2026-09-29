@@ -5,7 +5,8 @@ damage severity, confidence, and the full tool-call history, not just a label.
 `selection_reasoning` additionally captures *why* each tool was chosen, for
 traceability (SYS-02). `tile_path` is stored so a later re-inspection (SYS-01)
 can find and reprocess the same image — without it, a dispatched re-inspection
-has nothing to actually re-run against. `batch_id` scopes a tile to one disaster
+has nothing to actually re-run against. `tool_errors` / `failure_reason` record
+faults (FLT-01/02) without polluting `tool_call_history`. `batch_id` scopes a tile to one disaster
 batch so Agent 2 never clusters across batches (SYS-05, E2E-02).
 """
 from __future__ import annotations
@@ -47,6 +48,19 @@ class ToolCallRecord(BaseModel):
         )
 
 
+class ToolErrorRecord(BaseModel):
+    """One failed tool call. Kept apart from `tool_call_history` on purpose:
+    history holds only real results (Agent 2 scores from it), while this is the
+    audit trail of attempts that produced nothing (FLT-02, SYS-02).
+    """
+
+    tool_name: str
+    attempt: int
+    error_type: str
+    message: str
+    failed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class TileAssessment(BaseModel):
     """Final Agent 1 output for a single tile — written to Firestore."""
 
@@ -59,3 +73,8 @@ class TileAssessment(BaseModel):
     damage_severity: str | None = None  # None when escalated without a usable result
     confidence: float | None = None
     tool_call_history: list[ToolCallRecord] = Field(default_factory=list)
+    # Failed tool attempts (endpoint down, etc.) — audit trail, never used for scoring.
+    tool_errors: list[ToolErrorRecord] = Field(default_factory=list)
+    # Why an escalated tile could not be assessed (unreadable image, every tool
+    # failing). None for ordinary escalation, i.e. tools ran but confidence stayed low.
+    failure_reason: str | None = None
