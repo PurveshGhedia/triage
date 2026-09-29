@@ -5,7 +5,8 @@ damage severity, confidence, and the full tool-call history, not just a label.
 `selection_reasoning` additionally captures *why* each tool was chosen, for
 traceability (SYS-02). `tile_path` is stored so a later re-inspection (SYS-01)
 can find and reprocess the same image — without it, a dispatched re-inspection
-has nothing to actually re-run against.
+has nothing to actually re-run against. `batch_id` scopes a tile to one disaster
+batch so Agent 2 never clusters across batches (SYS-05, E2E-02).
 """
 from __future__ import annotations
 
@@ -15,6 +16,9 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from shared.tool_interface import ToolResult
+
+# Used when no batch is specified, and for records saved before batch_id existed.
+DEFAULT_BATCH_ID = "default"
 
 
 class TileStatus(str, Enum):
@@ -47,6 +51,7 @@ class TileAssessment(BaseModel):
     """Final Agent 1 output for a single tile — written to Firestore."""
 
     tile_id: str
+    batch_id: str = DEFAULT_BATCH_ID  # older Firestore docs lack this and load as "default"
     tile_path: str | None = None  # needed so SYS-01 re-inspection can reprocess this tile
     latitude: float | None = None
     longitude: float | None = None

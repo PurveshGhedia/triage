@@ -28,3 +28,4 @@ ruff
 mypy
 python-dotenv
 pre-commit
+matplotlib

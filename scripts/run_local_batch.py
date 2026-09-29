@@ -4,6 +4,7 @@ Usage:
     python -m scripts.run_local_batch --tiles-dir data/sample_tiles
     python -m scripts.run_local_batch --tiles-dir data/sample_tiles --dry-run
     python -m scripts.run_local_batch --tiles-dir data/sample_tiles --use-llm-selector
+    python -m scripts.run_local_batch --tiles-dir data/sample_tiles --batch-id guatemala-volcano
 
 By default uses the round-robin placeholder selector (free, fully offline)
 and writes each TileAssessment to Firestore. --dry-run prints results instead
@@ -14,10 +15,15 @@ Trial credit; Claude on Vertex is a third-party "partner model" (MaaS) that
 the credit explicitly excludes. Needs `gcloud auth application-default
 login` and .env configured (GCP_PROJECT_ID, VERTEX_AI_LOCATION).
 
+--batch-id tags every tile in this run with a batch (one disaster event's worth
+of tiles) so Agent 2 can plan each batch in isolation (SYS-05). Defaults to
+"default". Tile ids must be unique across batches, since the Firestore document
+id is the tile id (xBD filenames embed the disaster name, so they are).
+
 Optional geolocation: pass --geo-file pointing at a JSON file shaped like
     {"tile_001": {"latitude": 12.3, "longitude": 45.6}, ...}
-Tiles not listed there get no geolocation — fine for local testing now, but
-Agent 2's adjacency graph will need it later.
+Tiles not listed there get no geolocation — Agent 2 will surface them for
+manual review rather than clustering them.
 
 IMPORTANT — run this as a module, from the repo root, not as a bare script:
     python -m scripts.run_local_batch --tiles-dir data/sample_tiles --dry-run
@@ -33,7 +39,7 @@ import sys
 from pathlib import Path
 
 from agents.perception.agent import PerceptionAgent, round_robin_selector
-from agents.perception.schemas import TileStatus
+from agents.perception.schemas import DEFAULT_BATCH_ID, TileStatus
 from tools.classifier.client import ClassifierClient
 from tools.detector.client import DetectorClient
 from tools.sam.client import SAMClient
@@ -66,6 +72,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tiles-dir", type=Path, required=True)
     parser.add_argument("--geo-file", type=Path, default=None)
+    parser.add_argument("--batch-id", default=DEFAULT_BATCH_ID)
     parser.add_argument("--use-llm-selector", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -86,6 +93,8 @@ def main() -> None:
 
         store = TileAssessmentStore()
 
+    print(f"Batch: {args.batch_id}\n")
+
     assessed, escalated = 0, 0
     for tile_path in tiles:
         tile_id = tile_path.stem
@@ -95,6 +104,7 @@ def main() -> None:
             tile_path=str(tile_path),
             latitude=location.get("latitude"),
             longitude=location.get("longitude"),
+            batch_id=args.batch_id,
         )
 
         if assessment.status == TileStatus.ASSESSED:

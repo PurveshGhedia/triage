@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from agents.perception.schemas import TileAssessment, TileStatus, ToolCallRecord
+from agents.perception.schemas import (
+    DEFAULT_BATCH_ID,
+    TileAssessment,
+    TileStatus,
+    ToolCallRecord,
+)
 from shared.tool_interface import ToolClient, ToolResult
 
 CONFIDENCE_THRESHOLD = 0.75
@@ -58,6 +63,7 @@ class PerceptionAgent:
         tile_path: str,
         latitude: float | None = None,
         longitude: float | None = None,
+        batch_id: str = DEFAULT_BATCH_ID,
     ) -> TileAssessment:
         history: list[ToolCallRecord] = []
         best_result: ToolResult | None = None
@@ -69,6 +75,7 @@ class PerceptionAgent:
                 # rather than emitting a final low-confidence assessment.
                 return TileAssessment(
                     tile_id=tile_id,
+                    batch_id=batch_id,
                     tile_path=tile_path,
                     latitude=latitude,
                     longitude=longitude,
@@ -90,6 +97,7 @@ class PerceptionAgent:
 
         return TileAssessment(
             tile_id=tile_id,
+            batch_id=batch_id,
             tile_path=tile_path,
             latitude=latitude,
             longitude=longitude,

@@ -14,6 +14,7 @@ from __future__ import annotations
 from google.cloud import firestore
 
 from agents.perception.schemas import TileAssessment
+from shared.batching import filter_by_batch
 from shared.config import FIRESTORE_COLLECTION_TILES, GCP_PROJECT_ID
 
 
@@ -30,12 +31,28 @@ class TileAssessmentStore:
         doc = self._client.collection(self._collection).document(tile_id).get()
         return doc.to_dict() if doc.exists else None
 
+    def delete(self, tile_id: str) -> None:
+        """Remove one tile document (used by scripts.cleanup_placeholders)."""
+        self._client.collection(self._collection).document(tile_id).delete()
+
     def list_all(self) -> list[TileAssessment]:
         """Reads every tile assessment currently in Firestore, reconstructed
-        as TileAssessment objects — this is Agent 2's actual input.
+        as TileAssessment objects.
         """
         docs = self._client.collection(self._collection).stream()
         return [TileAssessment.model_validate(doc.to_dict()) for doc in docs]
+
+    def list_by_batch(self, batch_id: str) -> list[TileAssessment]:
+        """Tile assessments belonging to one batch — this is Agent 2's input
+        (SYS-05: the planner only ever sees a single batch).
+
+        Filters client-side after validation rather than with a Firestore
+        `where` query on purpose: documents saved before `batch_id` existed have
+        no such field, so a server-side equality filter would silently miss them,
+        while validation gives them the default batch_id. Fine at course scale;
+        move to an indexed query once every document carries batch_id.
+        """
+        return filter_by_batch(self.list_all(), batch_id)
 
     @staticmethod
     def _to_firestore_dict(assessment: TileAssessment) -> dict:
