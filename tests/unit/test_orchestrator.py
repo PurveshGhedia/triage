@@ -107,8 +107,9 @@ def test_conflict_triggers_reinspection_and_a_second_ledger_version(tmp_path):
     assert result.reinspected_tile_ids == ["t0", "t1"] or "t1" in result.reinspected_tile_ids
     v1 = [r for r in ledger.read_all() if r.version == 1][0]
     v2 = ledger.read_latest("A")[0]
-    assert v1.conflicting_tile_pairs and v1.damage_score == 3.0
-    assert v2.version == 2 and v2.conflicting_tile_pairs == [] and v2.damage_score == 2.0
+    assert v1.conflicting_tile_pairs
+    assert v2.version == 2 and v2.conflicting_tile_pairs == []
+    assert v2.damage_score < v1.damage_score  # the second opinion lowered the zone's damage
     assert len(ledger.read_all()) == 2  # v1 retained, append-only (PLN-05)
     types = [e["type"] for e in events.events]
     assert "reinspection_requested" in types and "tile_reinspected" in types

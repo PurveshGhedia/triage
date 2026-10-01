@@ -29,3 +29,5 @@ mypy
 python-dotenv
 pre-commit
 matplotlib
+google-adk[a2a]
+matplotlib

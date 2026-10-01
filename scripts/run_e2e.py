@@ -11,6 +11,11 @@ images, geo.json and demo.json (which holds the recommended adjacency radius).
 Each run gets its own batch id (<disaster>-<timestamp>) unless you pass --batch-id,
 so repeated demo runs never mix versions. Events go to data/runs/<run_id>/events.jsonl.
 
+--transport a2a runs Agent 1 and Agent 2 as real Google ADK A2A services and talks to them
+over HTTP (the orchestrator uses ADK's RemoteA2aAgent). With --spawn-local the two services
+are started on localhost for you; otherwise pass --agent1-url / --agent2-url. If an A2A call
+fails, the run falls back to the in-process agents (disable with --no-fallback) and says so.
+
 --offline keeps tile records in memory (no Firestore/network); the zone ledger and
 event log are still written to disk, so the dashboard works the same way.
 """
@@ -71,6 +76,13 @@ def print_event(event: dict) -> None:
         b, a = event["before"], event["after"]
         print(f"  [agent 1] {a['tile_id']}: {b['damage_severity'] if b else '?'} -> "
               f"{a['damage_severity']}")
+    elif t == "transport_selected":
+        print(f"[transport] {event['transport']}"
+              + (f"  agent1={event['agent1_url']}  agent2={event['agent2_url']}"
+                 if event["transport"] == "a2a" else ""))
+    elif t == "transport_fallback":
+        print(f"[transport] !! A2A call to the {event['agent']} agent failed "
+              f"({event['error']}); using the in-process agent instead")
     elif t == "reinspection_no_change":
         print(f"[loop] round {event['round']}: second opinion changed nothing; stopping")
     elif t == "reinspection_exhausted":
@@ -90,6 +102,12 @@ def main() -> None:
     parser.add_argument("--per-tile-cap", type=int, default=2)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--use-llm-selector", action="store_true")
+    parser.add_argument("--transport", choices=["inprocess", "a2a"], default="inprocess")
+    parser.add_argument("--agent1-url", default=None)
+    parser.add_argument("--agent2-url", default=None)
+    parser.add_argument("--spawn-local", action="store_true",
+                        help="With --transport a2a: start both agents on localhost.")
+    parser.add_argument("--no-fallback", action="store_true")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--events-dir", type=Path, default=Path("data/runs"))
     args = parser.parse_args()
@@ -125,15 +143,49 @@ def main() -> None:
 
     events_path = args.events_dir / run_id / "events.jsonl"
     events = EventLog(run_id, events_path, listener=print_event)
-    perception = InProcessPerception(
+    in_process_perception = InProcessPerception(
         agent=build_perception_agent(args.use_llm_selector),
         reinspection_agent=build_second_opinion_agent(args.use_llm_selector),
         max_workers=args.concurrency,
     )
+    in_process_planner = InProcessPlanner()
+    perception, planner = in_process_perception, in_process_planner
+    services = None
 
-    run_pipeline(
-        specs, config, perception, InProcessPlanner(), store, LocalZoneRankingStore(), events
-    )
+    if args.transport == "a2a":
+        import warnings
+
+        warnings.filterwarnings("ignore", message=r"\[EXPERIMENTAL\]")
+        from agents.orchestrator.a2a_client import (
+            A2APerception, A2APlanner, ResilientPerception, ResilientPlanner,
+        )
+
+        if args.spawn_local:
+            from agents.orchestrator.local_services import start_local_services
+
+            services = start_local_services(in_process_perception, in_process_planner)
+            agent1_url, agent2_url = services.perception_url, services.planner_url
+        else:
+            agent1_url, agent2_url = args.agent1_url, args.agent2_url
+            if not (agent1_url and agent2_url):
+                sys.exit("--transport a2a needs --spawn-local, or both --agent1-url and --agent2-url")
+
+        def on_fallback(agent: str, exc: Exception) -> None:
+            events.emit("transport_fallback", agent=agent, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+
+        perception, planner = A2APerception(agent1_url), A2APlanner(agent2_url)
+        if not args.no_fallback:
+            perception = ResilientPerception(perception, in_process_perception, on_fallback)
+            planner = ResilientPlanner(planner, in_process_planner, on_fallback)
+        events.emit("transport_selected", transport="a2a", agent1_url=agent1_url, agent2_url=agent2_url)
+    else:
+        events.emit("transport_selected", transport="inprocess")
+
+    try:
+        run_pipeline(specs, config, perception, planner, store, LocalZoneRankingStore(), events)
+    finally:
+        if services:
+            services.stop()
     print(f"\nEvent log: {events_path}")
 
 

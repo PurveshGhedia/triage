@@ -8,10 +8,24 @@ labels are actually damage readings; detector labels describe road/building
 access, not damage. So scoring pulls damage and accessibility signals
 separately from each tile's full `tool_call_history`, rather than trusting
 the single top-level field.
+
+ZONE AGGREGATION: a zone's damage and access components are each a blend of
+the worst tile and the average tile:
+
+    component = MAX_WEIGHT * max(tiles) + (1 - MAX_WEIGHT) * mean(tiles)
+
+Taking the pure maximum saturated large zones: with several tiles, almost every
+zone contains one destroyed tile and one blocked-access tile, so nearly every
+zone tied at 6.0 and the ranking carried no information. Blending keeps a single
+catastrophic tile visible (the max term) while still rewarding zones where the
+whole area is hit (the mean term). A one-tile zone scores exactly as before.
 """
 from __future__ import annotations
 
 from agents.perception.schemas import TileAssessment
+
+# Share of a zone's score taken from its worst tile (the rest comes from the mean).
+MAX_WEIGHT = 0.5
 
 DAMAGE_LABEL_SCORES: dict[str, float] = {
     # classifier vocabulary
@@ -57,6 +71,11 @@ def tile_access_penalty(tile: TileAssessment) -> float:
     return ACCESS_LABEL_PENALTIES.get(best.label, 0.0)
 
 
+def _blend(values: list[float]) -> float:
+    """MAX_WEIGHT * worst + (1 - MAX_WEIGHT) * average, rounded for stable output."""
+    return round(MAX_WEIGHT * max(values) + (1 - MAX_WEIGHT) * (sum(values) / len(values)), 2)
+
+
 def score_zone(tiles: list[TileAssessment]) -> tuple[float, float, float]:
     """Returns (damage_score, accessibility_penalty, priority_score) for a
     zone. Accessibility can override raw damage (PLN-02): both components sit
@@ -66,7 +85,7 @@ def score_zone(tiles: list[TileAssessment]) -> tuple[float, float, float]:
     if not tiles:
         return 0.0, 0.0, 0.0
 
-    damage_score = max(tile_damage_score(t) for t in tiles)
-    accessibility_penalty = max(tile_access_penalty(t) for t in tiles)
-    priority_score = damage_score + accessibility_penalty
+    damage_score = _blend([tile_damage_score(t) for t in tiles])
+    accessibility_penalty = _blend([tile_access_penalty(t) for t in tiles])
+    priority_score = round(damage_score + accessibility_penalty, 2)
     return damage_score, accessibility_penalty, priority_score

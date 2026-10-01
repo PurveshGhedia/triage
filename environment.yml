@@ -19,6 +19,8 @@ dependencies:
       - google-cloud-run
       - google-genai
       - matplotlib
+      - google-adk[a2a]
+      - matplotlib
 
       # --- LLM SDK (Claude via Vertex Model Garden) ---
       - anthropic[vertex] # lets you call Claude through Vertex; swap to vertexai.generative_models for Gemini calls
