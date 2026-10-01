@@ -9,6 +9,15 @@ A selector returns (next_tool, reasoning): `reasoning` is optional free text
 explaining the pick, captured on the resulting ToolCallRecord for audit trails
 (SYS-02). Returns (None, None) once no untried tool remains.
 
+Damage vs access tools: only tools with `provides_damage` (classifier, SAM) can
+satisfy the confidence threshold or set a tile's `damage_severity`. Auxiliary
+tools (the detector, whose labels describe road access) never end the loop. With
+`run_auxiliary_tools=True`, each auxiliary tool is run once after a damage result
+is accepted, so every assessed tile carries an accessibility signal for Agent 2.
+
+Selector faults: if `tool_selector` itself raises (e.g. a Gemini 429 or timeout),
+that one decision falls back to round-robin instead of failing the tile.
+
 Fault handling (FLT-01 / FLT-02) — a tile must never crash its job:
   * `tile_validator` (optional) is a pre-flight readability check. If it raises,
     the tile is escalated with a `failure_reason` and no tool is called.
@@ -74,6 +83,7 @@ class PerceptionAgent:
         max_tool_attempts: int = MAX_TOOL_ATTEMPTS,
         backoff_base_s: float = BACKOFF_BASE_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
+        run_auxiliary_tools: bool = False,
     ) -> None:
         if not tools:
             raise ValueError("PerceptionAgent requires at least one tool")
@@ -86,6 +96,7 @@ class PerceptionAgent:
         self.max_tool_attempts = max_tool_attempts
         self.backoff_base_s = backoff_base_s
         self._sleep = sleep
+        self.run_auxiliary_tools = run_auxiliary_tools
 
     def process_tile(
         self,
@@ -98,7 +109,7 @@ class PerceptionAgent:
         history: list[ToolCallRecord] = []
         tool_errors: list[ToolErrorRecord] = []
         failed_tools: set[str] = set()
-        best_result: ToolResult | None = None
+        best_result: ToolResult | None = None  # best DAMAGE result only
 
         def escalate(failure_reason: str | None) -> TileAssessment:
             return TileAssessment(
@@ -127,12 +138,13 @@ class PerceptionAgent:
             # Tools that failed for good on this tile are hidden from the selector,
             # otherwise it would keep offering a tool that has no result in `history`.
             usable_tools = [t for t in self.tools if t.name not in failed_tools]
-            tool, reasoning = self.tool_selector(history, usable_tools)
+            tool, reasoning = self._select_tool(history, usable_tools, tile_id)
             if tool is None:
                 # PER-03: retries exhausted without reaching threshold -> escalate
                 # rather than emitting a final low-confidence assessment.
-                if not history and tool_errors:
-                    return escalate("all tools failed: " + _summarise_failures(tool_errors))
+                if tool_errors and best_result is None:
+                    prefix = "all tools failed" if not history else "no damage tool produced a result"
+                    return escalate(f"{prefix}: " + _summarise_failures(tool_errors))
                 return escalate(None)
 
             if tool.name in failed_tools:
@@ -151,12 +163,20 @@ class PerceptionAgent:
 
             history.append(ToolCallRecord.from_tool_result(result, selection_reasoning=reasoning))
 
+            if not _provides_damage(tool):
+                continue  # auxiliary signal (e.g. road access): never ends the loop
+
             if best_result is None or result.confidence > best_result.confidence:
                 best_result = result
 
             if result.confidence >= self.confidence_threshold:
-                # PER-02: accept immediately, no unnecessary extra tool calls.
+                # PER-02: accept immediately, no unnecessary extra damage-tool calls.
                 break
+
+        if self.run_auxiliary_tools:
+            self._run_remaining_auxiliary_tools(
+                history, failed_tools, tile_id, tile_path, tool_errors
+            )
 
         return TileAssessment(
             tile_id=tile_id,
@@ -170,6 +190,49 @@ class PerceptionAgent:
             tool_call_history=history,
             tool_errors=tool_errors,
         )
+
+    def _select_tool(
+        self,
+        history: list[ToolCallRecord],
+        usable_tools: list[ToolClient],
+        tile_id: str,
+    ) -> tuple[ToolClient | None, str | None]:
+        """Ask the selector for the next tool; if the selector itself blows up
+        (LLM timeout, quota, auth), degrade to round-robin for this decision.
+        """
+        try:
+            return self.tool_selector(history, usable_tools)
+        except Exception as exc:
+            logger.warning(
+                "Tool selector failed for tile %s (%s: %s); falling back to round-robin",
+                tile_id, type(exc).__name__, str(exc)[:200],
+            )
+            tool, _ = round_robin_selector(history, usable_tools)
+            return tool, f"fallback (selector error: {type(exc).__name__})"
+
+    def _run_remaining_auxiliary_tools(
+        self,
+        history: list[ToolCallRecord],
+        failed_tools: set[str],
+        tile_id: str,
+        tile_path: str,
+        tool_errors: list[ToolErrorRecord],
+    ) -> None:
+        """Run each not-yet-run auxiliary tool once. Failures are audited in
+        tool_errors but never fail the tile: the access signal is a bonus.
+        """
+        tried = {r.tool_name for r in history} | failed_tools
+        for tool in self.tools:
+            if _provides_damage(tool) or tool.name in tried:
+                continue
+            result = self._run_tool_with_retry(tool, tile_id, tile_path, tool_errors)
+            if result is None:
+                continue
+            history.append(
+                ToolCallRecord.from_tool_result(
+                    result, selection_reasoning="auxiliary signal: run once after damage assessment"
+                )
+            )
 
     def _run_tool_with_retry(
         self,
@@ -215,6 +278,11 @@ class PerceptionAgent:
                 message=message,
             )
         )
+
+
+def _provides_damage(tool: ToolClient) -> bool:
+    # getattr keeps duck-typed test doubles (no attribute) behaving as damage tools.
+    return getattr(tool, "provides_damage", True)
 
 
 def _summarise_failures(tool_errors: list[ToolErrorRecord]) -> str:

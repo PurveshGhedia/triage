@@ -35,12 +35,13 @@ def cleanup(store, tile_ids: list[str], dry_run: bool) -> tuple[list[str], list[
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ids", nargs="+", default=DEFAULT_PLACEHOLDER_IDS)
+    parser.add_argument("--batch-id", default="default")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     from shared.firestore_client import TileAssessmentStore
 
-    removed, missing = cleanup(TileAssessmentStore(), args.ids, args.dry_run)
+    removed, missing = cleanup(TileAssessmentStore(batch_id=args.batch_id), args.ids, args.dry_run)
 
     verb = "Would delete" if args.dry_run else "Deleted"
     print(f"{verb} {len(removed)} document(s): {removed}")

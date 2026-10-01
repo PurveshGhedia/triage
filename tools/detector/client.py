@@ -2,6 +2,10 @@
 
 Used both as a retry tool for damage assessment and, downstream, to inform
 Agent 2's road-accessibility scoring. Same mock/real split as the classifier.
+
+`provides_damage = False`: its labels describe road/building ACCESS, not damage.
+Agent 1 therefore never lets a detector result satisfy the confidence threshold
+or become a tile's `damage_severity`; it is an auxiliary access signal.
 """
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ ACCESS_LABELS = ["access-clear", "access-degraded", "access-blocked"]
 
 class DetectorClient(ToolClient):
     name = "detector"
+    provides_damage = False
     description = (
         "Object detector for roads, bridges, and buildings — best when access/"
         "infrastructure state matters, not just overall damage severity."

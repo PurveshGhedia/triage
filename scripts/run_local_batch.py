@@ -17,8 +17,8 @@ login` and .env configured (GCP_PROJECT_ID, VERTEX_AI_LOCATION).
 
 --batch-id tags every tile in this run with a batch (one disaster event's worth
 of tiles) so Agent 2 can plan each batch in isolation (SYS-05). Defaults to
-"default". Tile ids must be unique across batches, since the Firestore document
-id is the tile id (xBD filenames embed the disaster name, so they are).
+"default". Tiles are stored per batch in Firestore (batches/<batch_id>/tiles/<tile_id>),
+so two batches can reuse a tile id without clashing.
 
 Unreadable tile images and failing tools never crash the run: the tile is
 escalated with a reason (FLT-01/02) and the batch carries on.
@@ -41,12 +41,9 @@ import json
 import sys
 from pathlib import Path
 
-from agents.perception.agent import PerceptionAgent, round_robin_selector
+from agents.perception.agent import PerceptionAgent
 from agents.perception.schemas import DEFAULT_BATCH_ID, TileStatus
-from shared.tile_validation import validate_tile_image
-from tools.classifier.client import ClassifierClient
-from tools.detector.client import DetectorClient
-from tools.sam.client import SAMClient
+from shared.agent_factory import build_perception_agent
 
 TILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
@@ -62,18 +59,7 @@ def load_geo(geo_file: Path | None) -> dict:
 
 
 def build_agent(use_llm_selector: bool) -> PerceptionAgent:
-    tools = [ClassifierClient(), DetectorClient(), SAMClient()]
-    if use_llm_selector:
-        from agents.perception.llm_selector import make_llm_tool_selector
-        from shared.gemini_vertex_client import GeminiVertexClient
-
-        selector = make_llm_tool_selector(GeminiVertexClient())
-        return PerceptionAgent(
-            tools=tools, tool_selector=selector, tile_validator=validate_tile_image
-        )
-    return PerceptionAgent(
-        tools=tools, tool_selector=round_robin_selector, tile_validator=validate_tile_image
-    )
+    return build_perception_agent(use_llm_selector)
 
 
 def main() -> None:
@@ -99,7 +85,7 @@ def main() -> None:
     if not args.dry_run:
         from shared.firestore_client import TileAssessmentStore
 
-        store = TileAssessmentStore()
+        store = TileAssessmentStore(batch_id=args.batch_id)
 
     print(f"Batch: {args.batch_id}\n")
 

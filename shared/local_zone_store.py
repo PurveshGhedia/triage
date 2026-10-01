@@ -9,11 +9,16 @@ deleted — the same guarantee PLN-05 requires, just backed by a plain file
 instead of a managed table. Swapping this for the real ZoneRankingStore later
 is a one-line change in scripts/run_planner_batch.py; nothing about
 TriagePlanner or ZoneRanking changes either way.
+
+Versioning is per batch: `next_version(batch_id)` removes the need to remember
+`--version N`, and `read_latest(batch_id)` is what a dashboard shows (SYS-03:
+only the most recent finalized ranking, never a stale intermediate one).
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+from agents.perception.schemas import DEFAULT_BATCH_ID
 from agents.planner.schemas import ZoneRanking
 
 
@@ -40,3 +45,23 @@ class LocalZoneRankingStore:
             return []
         with self._path.open() as f:
             return [ZoneRanking.model_validate_json(line) for line in f if line.strip()]
+
+    def latest_version(self, batch_id: str = DEFAULT_BATCH_ID) -> int:
+        """Highest version written for this batch; 0 if none."""
+        versions = [r.version for r in self.read_all() if r.batch_id == batch_id]
+        return max(versions, default=0)
+
+    def next_version(self, batch_id: str = DEFAULT_BATCH_ID) -> int:
+        return self.latest_version(batch_id) + 1
+
+    def read_latest(self, batch_id: str = DEFAULT_BATCH_ID) -> list[ZoneRanking]:
+        """Only the most recent version's rows for this batch (SYS-03)."""
+        rows = [r for r in self.read_all() if r.batch_id == batch_id]
+        if not rows:
+            return []
+        latest = max(r.version for r in rows)
+        return sorted(
+            (r for r in rows if r.version == latest),
+            key=lambda r: r.priority_score,
+            reverse=True,
+        )

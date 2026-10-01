@@ -7,7 +7,7 @@ result is written back to Firestore immediately.
 Usage:
     python -m scripts.run_planner_batch
     python -m scripts.run_planner_batch --batch-id guatemala-volcano
-    python -m scripts.run_planner_batch --version 2
+    python -m scripts.run_planner_batch              # auto: next version for the batch
     python -m scripts.run_planner_batch --expected-tiles 50 --wait-timeout-s 300
     python -m scripts.run_planner_batch --dry-run
     python -m scripts.run_planner_batch --use-bigquery
@@ -32,38 +32,45 @@ from __future__ import annotations
 
 import argparse
 
-from agents.perception.agent import PerceptionAgent, round_robin_selector
+from agents.perception.agent import PerceptionAgent
 from agents.perception.schemas import DEFAULT_BATCH_ID
 from agents.planner.agent import TriagePlanner
+from shared.agent_factory import build_perception_agent
 from shared.batch_wait import wait_for_batch
 from shared.firestore_client import TileAssessmentStore
 from shared.live_reinspection_dispatcher import LiveReinspectionDispatcher
-from shared.tile_validation import validate_tile_image
-from tools.classifier.client import ClassifierClient
-from tools.detector.client import DetectorClient
-from tools.sam.client import SAMClient
+from shared.local_zone_store import LocalZoneRankingStore
 
 
 def build_reinspection_agent(use_llm_selector: bool) -> PerceptionAgent:
-    tools = [ClassifierClient(), DetectorClient(), SAMClient()]
-    if use_llm_selector:
-        from agents.perception.llm_selector import make_llm_tool_selector
-        from shared.gemini_vertex_client import GeminiVertexClient
+    return build_perception_agent(use_llm_selector)
 
-        selector = make_llm_tool_selector(GeminiVertexClient())
-        return PerceptionAgent(
-            tools=tools, tool_selector=selector, tile_validator=validate_tile_image
+
+def _resolve_version(args) -> int:
+    """Auto-increment per batch; refuse a manual version that would not be newer
+    than what the ledger already holds (it would break version ordering)."""
+    if args.use_bigquery:
+        return args.version or 1
+    ledger = LocalZoneRankingStore()
+    latest = ledger.latest_version(args.batch_id)
+    if args.version is None:
+        return latest + 1
+    if args.version <= latest:
+        raise SystemExit(
+            f"Refusing --version {args.version}: batch '{args.batch_id}' already has "
+            f"version {latest} in the ledger. Omit --version to auto-increment."
         )
-    return PerceptionAgent(
-        tools=tools, tool_selector=round_robin_selector, tile_validator=validate_tile_image
-    )
+    return args.version
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adjacency-radius-m", type=float, default=500.0)
     parser.add_argument("--batch-id", default=DEFAULT_BATCH_ID)
-    parser.add_argument("--version", type=int, default=1)
+    parser.add_argument(
+        "--version", type=int, default=None,
+        help="Ledger version to write. Default: the batch's latest version + 1.",
+    )
     parser.add_argument(
         "--expected-tiles", type=int, default=None,
         help="How many tiles this batch should contain. If fewer have reported, the "
@@ -76,7 +83,7 @@ def main() -> None:
     parser.add_argument("--use-llm-selector", action="store_true")
     args = parser.parse_args()
 
-    tile_store = TileAssessmentStore()
+    tile_store = TileAssessmentStore(batch_id=args.batch_id)
     readiness = wait_for_batch(
         lambda: tile_store.list_by_batch(args.batch_id),
         expected=args.expected_tiles,
@@ -103,7 +110,9 @@ def main() -> None:
     reinspection_agent = build_reinspection_agent(args.use_llm_selector)
     dispatcher = LiveReinspectionDispatcher(agent=reinspection_agent, tile_store=tile_store)
     planner = TriagePlanner(dispatcher=dispatcher, adjacency_radius_m=args.adjacency_radius_m)
-    rankings = planner.plan(tiles, version=args.version)
+    version = _resolve_version(args)
+    print(f"Writing ledger version {version} for batch '{args.batch_id}'.\n")
+    rankings = planner.plan(tiles, version=version)
 
     for ranking in rankings:
         extra = ""
@@ -120,8 +129,8 @@ def main() -> None:
               f"(each was actually re-run against Agent 1 -- see Firestore for updated results):")
         for tile_id, reason in dispatcher.dispatched:
             print(f"  - {tile_id}: {reason}")
-        print("Re-scored tiles are saved to Firestore now. Run this command again with a "
-              "higher --version to see the correction reflected in the ranking ledger.")
+        print("Re-scored tiles are saved to Firestore now. Run this command again to "
+              "write the next ledger version that reflects the correction.")
 
     if args.dry_run:
         print(f"\n(dry run — {len(rankings)} zone ranking(s) not written anywhere)")

@@ -25,6 +25,10 @@ class ToolClient(ABC):
     """Base class for classifier / detector / SAM clients."""
 
     name: str
+    # True for tools whose label is a damage reading (classifier, SAM). False for
+    # auxiliary tools such as the detector, whose label describes something else
+    # (road access) and so must not decide a tile's damage_severity.
+    provides_damage: bool = True
 
     @abstractmethod
     def run(self, tile_path: str) -> ToolResult:
