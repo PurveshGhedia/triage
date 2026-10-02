@@ -29,3 +29,30 @@ class PlanOutcome(BaseModel):
 
     rankings: list[ZoneRanking]
     reinspection_requests: list[ReinspectionRequest] = Field(default_factory=list)
+
+
+ARRIVAL_ORDERS = ("sweep", "sorted", "shuffle")
+
+
+def order_for_arrival(specs: list[TileSpec], mode: str = "sweep", seed: int = 7) -> list[TileSpec]:
+    """The order tiles 'arrive' in a simulated feed.
+
+    sweep:   north to south, then west to east, like a satellite pass over the area.
+    sorted:  by tile id.
+    shuffle: a fixed pseudo-random order (same every run, so demos are repeatable).
+    Tiles without coordinates go last in 'sweep'.
+    """
+    if mode == "sorted":
+        return sorted(specs, key=lambda s: s.tile_id)
+    if mode == "shuffle":
+        import random
+
+        ordered = sorted(specs, key=lambda s: s.tile_id)
+        random.Random(seed).shuffle(ordered)
+        return ordered
+    if mode == "sweep":
+        located = [s for s in specs if s.latitude is not None and s.longitude is not None]
+        unlocated = [s for s in specs if s not in located]
+        located.sort(key=lambda s: (-s.latitude, s.longitude, s.tile_id))
+        return located + sorted(unlocated, key=lambda s: s.tile_id)
+    raise ValueError(f"unknown arrival order {mode!r}; choose from {ARRIVAL_ORDERS}")

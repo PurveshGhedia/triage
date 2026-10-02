@@ -16,40 +16,21 @@ over HTTP (the orchestrator uses ADK's RemoteA2aAgent). With --spawn-local the t
 are started on localhost for you; otherwise pass --agent1-url / --agent2-url. If an A2A call
 fails, the run falls back to the in-process agents (disable with --no-fallback) and says so.
 
+Simulated live arrival: --wave-size 3 --wave-interval-s 2 feeds tiles in waves (default order:
+a north-to-south "sweep", like a satellite pass) and re-plans after every wave, so zones form
+and priorities shift as data comes in. Each wave is a new ledger version.
+
 --offline keeps tile records in memory (no Firestore/network); the zone ledger and
 event log are still written to disk, so the dashboard works the same way.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from agents.orchestrator.events import EventLog
-from agents.orchestrator.models import TileSpec
-from agents.orchestrator.pipeline import RunConfig, new_run_id, run_pipeline
-from agents.orchestrator.ports import InProcessPerception, InProcessPlanner
-from shared.agent_factory import build_perception_agent, build_second_opinion_agent
-from shared.local_zone_store import LocalZoneRankingStore
-
-TILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-
-
-def load_specs(demo_dir: Path) -> list[TileSpec]:
-    images = sorted(p for p in (demo_dir / "images").iterdir() if p.suffix.lower() in TILE_EXTENSIONS)
-    geo_path = demo_dir / "geo.json"
-    geo = json.loads(geo_path.read_text()) if geo_path.exists() else {}
-    return [
-        TileSpec(
-            tile_id=p.stem,
-            tile_path=str(p),
-            latitude=geo.get(p.stem, {}).get("latitude"),
-            longitude=geo.get(p.stem, {}).get("longitude"),
-        )
-        for p in images
-    ]
+from agents.orchestrator.models import ARRIVAL_ORDERS
+from agents.orchestrator.runner import RunOptions, execute_run
 
 
 def print_event(event: dict) -> None:
@@ -63,6 +44,8 @@ def print_event(event: dict) -> None:
         extra = f"  ({tile['failure_reason']})" if tile["failure_reason"] else ""
         print(f"  [agent 1] {tile['tile_id']}: {tile['status']} {sev} "
               f"conf={tile['confidence']}{extra}")
+    elif t == "wave_arrived":
+        print(f"[feed] wave {event['wave']}/{event['waves']}: {len(event['tile_ids'])} tile(s) arrived")
     elif t == "zones_ranked":
         print(f"[agent 2] version {event['version']}: {len(event['zones'])} zone(s), "
               f"{len(event['reinspection_requests'])} re-inspection request(s)")
@@ -101,6 +84,10 @@ def main() -> None:
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--per-tile-cap", type=int, default=2)
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--wave-size", type=int, default=None,
+                        help="Feed tiles in waves of this size (simulated live arrival).")
+    parser.add_argument("--wave-interval-s", type=float, default=2.0)
+    parser.add_argument("--arrival-order", choices=ARRIVAL_ORDERS, default="sweep")
     parser.add_argument("--use-llm-selector", action="store_true")
     parser.add_argument("--transport", choices=["inprocess", "a2a"], default="inprocess")
     parser.add_argument("--agent1-url", default=None)
@@ -112,81 +99,21 @@ def main() -> None:
     parser.add_argument("--events-dir", type=Path, default=Path("data/runs"))
     args = parser.parse_args()
 
-    demo_dir = args.demo_dir or Path("data/demo") / args.disaster
-    if not (demo_dir / "images").is_dir():
-        sys.exit(f"No tiles at {demo_dir}/images. Run: python -m scripts.select_demo_tiles "
-                 f"--disaster {args.disaster}")
-
-    meta_path = demo_dir / "demo.json"
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-    radius = args.radius_m or meta.get("adjacency_radius_m") or 500.0
-
-    specs = load_specs(demo_dir)
-    if not specs:
-        sys.exit(f"No tile images in {demo_dir}/images")
-
-    run_id = new_run_id()
-    batch_id = args.batch_id or f"{args.disaster}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}"
-    config = RunConfig(
-        batch_id=batch_id, run_id=run_id, adjacency_radius_m=radius,
-        max_rounds=args.rounds, per_tile_cap=args.per_tile_cap,
+    opts = RunOptions(
+        disaster=args.disaster, demo_dir=args.demo_dir, batch_id=args.batch_id,
+        radius_m=args.radius_m, rounds=args.rounds, per_tile_cap=args.per_tile_cap,
+        concurrency=args.concurrency, wave_size=args.wave_size,
+        wave_interval_s=args.wave_interval_s, arrival_order=args.arrival_order,
+        use_llm_selector=args.use_llm_selector, transport=args.transport,
+        agent1_url=args.agent1_url, agent2_url=args.agent2_url,
+        spawn_local=args.spawn_local, fallback=not args.no_fallback,
+        offline=args.offline, events_dir=args.events_dir,
     )
-
-    if args.offline:
-        from shared.memory_store import InMemoryTileStore
-
-        store = InMemoryTileStore(batch_id=batch_id)
-    else:
-        from shared.firestore_client import TileAssessmentStore
-
-        store = TileAssessmentStore(batch_id=batch_id)
-
-    events_path = args.events_dir / run_id / "events.jsonl"
-    events = EventLog(run_id, events_path, listener=print_event)
-    in_process_perception = InProcessPerception(
-        agent=build_perception_agent(args.use_llm_selector),
-        reinspection_agent=build_second_opinion_agent(args.use_llm_selector),
-        max_workers=args.concurrency,
-    )
-    in_process_planner = InProcessPlanner()
-    perception, planner = in_process_perception, in_process_planner
-    services = None
-
-    if args.transport == "a2a":
-        import warnings
-
-        warnings.filterwarnings("ignore", message=r"\[EXPERIMENTAL\]")
-        from agents.orchestrator.a2a_client import (
-            A2APerception, A2APlanner, ResilientPerception, ResilientPlanner,
-        )
-
-        if args.spawn_local:
-            from agents.orchestrator.local_services import start_local_services
-
-            services = start_local_services(in_process_perception, in_process_planner)
-            agent1_url, agent2_url = services.perception_url, services.planner_url
-        else:
-            agent1_url, agent2_url = args.agent1_url, args.agent2_url
-            if not (agent1_url and agent2_url):
-                sys.exit("--transport a2a needs --spawn-local, or both --agent1-url and --agent2-url")
-
-        def on_fallback(agent: str, exc: Exception) -> None:
-            events.emit("transport_fallback", agent=agent, error=f"{type(exc).__name__}: {str(exc)[:160]}")
-
-        perception, planner = A2APerception(agent1_url), A2APlanner(agent2_url)
-        if not args.no_fallback:
-            perception = ResilientPerception(perception, in_process_perception, on_fallback)
-            planner = ResilientPlanner(planner, in_process_planner, on_fallback)
-        events.emit("transport_selected", transport="a2a", agent1_url=agent1_url, agent2_url=agent2_url)
-    else:
-        events.emit("transport_selected", transport="inprocess")
-
     try:
-        run_pipeline(specs, config, perception, planner, store, LocalZoneRankingStore(), events)
-    finally:
-        if services:
-            services.stop()
-    print(f"\nEvent log: {events_path}")
+        result = execute_run(opts, listener=print_event)
+    except ValueError as exc:
+        sys.exit(str(exc))
+    print(f"\nEvent log: {opts.events_dir / result.run_id / 'events.jsonl'}")
 
 
 if __name__ == "__main__":

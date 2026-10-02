@@ -279,3 +279,82 @@ def test_in_memory_store_matches_the_firestore_store_contract():
     assert store.get("t")["status"] == "assessed" and store.get("t", "B")["status"] == "escalated"
     assert [x.batch_id for x in store.list_by_batch("A")] == ["A"]
     assert store.list_batches() == ["A", "B"]
+
+
+# --- streaming mode: tiles arrive in waves, Agent 2 re-plans after each -----------------
+
+
+def test_waves_replan_after_each_wave_and_record_the_evolution(tmp_path):
+    calm = agent({}, default=("minor-damage", 0.9))
+    sleeps = []
+    store = InMemoryTileStore()
+    ledger = LocalZoneRankingStore(tmp_path / "ledger.jsonl")
+    events = EventLog("r", tmp_path / "e.jsonl")
+    result = run_pipeline(
+        line_specs(6), RunConfig(batch_id="A", run_id="r", wave_size=2, wave_interval_s=1.5),
+        InProcessPerception(calm, calm), InProcessPlanner(), store, ledger, events,
+        sleep=sleeps.append,
+    )
+
+    assert result.versions == [1, 2, 3]                      # one ranking per wave
+    sizes = [e["tile_count"] for e in events.events if e["type"] == "planner_started"]
+    assert sizes == [2, 4, 6]                                # planner only saw tiles that had arrived
+    assert sleeps == [1.5, 1.5]                              # paused between waves, not after the last
+    waves = [e for e in events.events if e["type"] == "wave_arrived"]
+    assert [(w["wave"], w["waves"], len(w["tile_ids"])) for w in waves] == [(1, 3, 2), (2, 3, 2), (3, 3, 2)]
+    assert len(ledger.read_all()) == 3 * 1                   # a single zone per version here
+
+
+def test_planning_after_an_early_wave_does_not_wait_for_later_tiles(tmp_path):
+    calm = agent({}, default=("minor-damage", 0.9))
+    events = EventLog("r", tmp_path / "e.jsonl")
+    run_pipeline(
+        line_specs(4), RunConfig(batch_id="A", run_id="r", wave_size=2),
+        InProcessPerception(calm, calm), InProcessPlanner(), InMemoryTileStore(),
+        LocalZoneRankingStore(tmp_path / "l.jsonl"), events, sleep=lambda s: None,
+    )
+    order = [e["type"] for e in events.events]
+    first_plan = order.index("zones_ranked")
+    # the first ranking is published before the second wave has even arrived
+    assert order.index("wave_arrived", order.index("wave_arrived") + 1) > first_plan
+
+
+def test_reinspection_still_runs_once_after_the_last_wave(tmp_path):
+    first, second = two_conflicting()
+    result, *_, events = run(line_specs(2), first, second, tmp_path=tmp_path, wave_size=1)
+
+    types = [e["type"] for e in events.events]
+    assert result.versions[:2] == [1, 2] and len(result.versions) >= 3   # 2 waves + >=1 re-inspection
+    assert types.count("reinspection_requested") >= 1
+    assert types.index("reinspection_requested") > max(i for i, t in enumerate(types) if t == "wave_arrived")
+
+
+def test_no_wave_size_means_a_single_wave(tmp_path):
+    calm = agent({}, default=("minor-damage", 0.9))
+    result, *_ , events = run(line_specs(5), calm, tmp_path=tmp_path)
+    assert result.versions == [1]
+    assert [e["type"] for e in events.events].count("wave_arrived") == 1
+
+
+def test_empty_batch_does_not_crash(tmp_path):
+    calm = agent({})
+    result, *_ = run([], calm, tmp_path=tmp_path, wave_size=3)
+    assert result.final_rankings == [] and result.versions == [1]
+
+
+def test_arrival_orders():
+    from agents.orchestrator.models import order_for_arrival
+
+    tiles = [
+        TileSpec(tile_id="b", tile_path="/b.png", latitude=10.0, longitude=5.0),
+        TileSpec(tile_id="a", tile_path="/a.png", latitude=12.0, longitude=9.0),
+        TileSpec(tile_id="c", tile_path="/c.png", latitude=12.0, longitude=1.0),
+        TileSpec(tile_id="nogeo", tile_path="/n.png"),
+    ]
+    assert [t.tile_id for t in order_for_arrival(tiles, "sweep")] == ["c", "a", "b", "nogeo"]  # N->S, W->E
+    assert [t.tile_id for t in order_for_arrival(tiles, "sorted")] == ["a", "b", "c", "nogeo"]
+    shuffled = [t.tile_id for t in order_for_arrival(tiles, "shuffle")]
+    assert shuffled == [t.tile_id for t in order_for_arrival(tiles, "shuffle")]          # repeatable
+    assert sorted(shuffled) == ["a", "b", "c", "nogeo"]
+    with pytest.raises(ValueError):
+        order_for_arrival(tiles, "teleport")
