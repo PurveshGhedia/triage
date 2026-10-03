@@ -201,3 +201,19 @@ def test_run_request_carries_tools_and_selector_choice_and_validates_them(world)
     assert c.post("/api/runs", json={"disaster": "storm"}).status_code == 200
     assert launched[1].tools == "mock" and launched[1].use_llm_selector is False   # safe defaults
     assert c.post("/api/runs", json={"disaster": "storm", "tools": "telepathy"}).status_code == 400
+
+
+# --- the page must not depend on a CDN -----------------------------------------------------------
+
+
+def test_leaflet_is_bundled_so_the_map_works_without_a_cdn(client):
+    page = client.get("/").text
+    assert "cdnjs" not in page and "unpkg" not in page and "jsdelivr" not in page
+    assert "/static/vendor/leaflet/leaflet.js" in page and "/static/vendor/leaflet/leaflet.css" in page
+    js = client.get("/static/vendor/leaflet/leaflet.js")
+    assert js.status_code == 200 and "Leaflet 1.9.4" in js.text[:300]
+    css = client.get("/static/vendor/leaflet/leaflet.css")
+    assert css.status_code == 200 and ".leaflet-container" in css.text
+    for img in ("layers.png", "marker-icon.png", "marker-shadow.png"):
+        assert client.get(f"/static/vendor/leaflet/images/{img}").status_code == 200
+    assert "BSD 2-Clause" in client.get("/static/vendor/leaflet/LICENSE").text      # licence kept with the library
