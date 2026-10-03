@@ -36,6 +36,9 @@ class ToolCallRecord(BaseModel):
     selection_reasoning: str | None = None
     # What the tool says it saw (vision tools only); shown in the dashboard timeline.
     evidence: str | None = None
+    # Optional finer-grained damage estimate on the 0-3 scale (vision tools); scoring prefers it
+    # over the coarse label when present.
+    score: float | None = None
     called_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
@@ -48,6 +51,7 @@ class ToolCallRecord(BaseModel):
             label=result.label,
             selection_reasoning=selection_reasoning,
             evidence=(getattr(result, "raw_output", None) or {}).get("evidence"),
+            score=(getattr(result, "raw_output", None) or {}).get("score"),
         )
 
 

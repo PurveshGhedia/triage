@@ -98,6 +98,29 @@ def recommend_radius(
     return last, counts[last], True
 
 
+GENERATED = ("images", "pre", "labels", ".thumbs")
+GENERATED_FILES = ("geo.json", "demo.json", "footprints.json")
+
+
+def reset_output_dir(out_dir: Path) -> list[str]:
+    """Remove what an earlier sampler run generated in `out_dir`, and nothing else.
+
+    Without this, re-running with a different --count or seed leaves old tiles behind, and the demo
+    quietly contains tiles that are no longer in geo.json. Returns the names it removed."""
+    removed = []
+    for name in GENERATED:
+        path = out_dir / name
+        if path.is_dir():
+            shutil.rmtree(path)
+            removed.append(name)
+    for name in GENERATED_FILES:
+        path = out_dir / name
+        if path.is_file():
+            path.unlink()
+            removed.append(name)
+    return removed
+
+
 def _copy_if_exists(src: Path, dst_dir: Path) -> bool:
     if not src.exists():
         return False
@@ -115,6 +138,8 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--cluster-radius-m", type=float, default=1500.0)
     parser.add_argument("--seed-tile", default=None)
+    parser.add_argument("--keep-existing", action="store_true",
+                        help="Do not clear files from an earlier run in the output folder first.")
     parser.add_argument(
         "--target-zones", type=int, default=None,
         help="Aim for at most this many zones when recommending a radius "
@@ -131,6 +156,8 @@ def main() -> None:
         sys.exit(str(exc))
 
     out_dir = args.out_dir or Path("data/demo") / args.disaster
+    if not args.keep_existing and reset_output_dir(out_dir):
+        print(f"  cleared an earlier selection in {out_dir}")
     copied = {"post": 0, "pre": 0, "labels": 0}
     for tile in tiles:
         pre = tile.replace(POST_SUFFIX, "_pre_disaster")

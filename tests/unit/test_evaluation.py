@@ -220,3 +220,34 @@ def test_default_runs_are_mock_and_say_so(demo, tmp_path):
                                     events_dir=tmp_path / "runs", ledger_path=tmp_path / "l.jsonl"))
     started = json.loads((tmp_path / "runs" / result.run_id / "events.jsonl").read_text().splitlines()[1])
     assert started["type"] == "run_started" and started["tools"] == "mock"
+
+
+# --- per-tile breakdown ------------------------------------------------------------------------
+
+
+def test_tile_table_orders_by_worst_disagreement_and_signs_the_error():
+    from agents.orchestrator.evaluation import tile_table
+
+    preds = {"scores": {"a": 3.0, "b": 1.0, "c": 0.0}, "escalated": [], "zones": []}
+    t = {"a": truth(0.0, 5), "b": truth(1.2, 9), "c": truth(2.5, 7), "gone": truth(1.0)}
+    rows = tile_table(preds, t)
+    assert [r["tile_id"] for r in rows] == ["a", "c", "b"]
+    assert rows[0] == {"tile_id": "a", "predicted": 3.0, "truth_mean": 0.0, "truth_worst": 3, "buildings": 5, "error": 3.0}
+    assert rows[1]["error"] == -2.5                     # an under-call is negative
+
+
+def test_evaluate_events_only_adds_details_when_asked(demo, tmp_path, monkeypatch):
+    fake_vision(monkeypatch)
+    monkeypatch.setenv("TRIAGE_VISION_CACHE", str(tmp_path / "cache"))
+    result = execute_run(RunOptions(disaster="storm", demo_root=demo, offline=True, tools="vision", rounds=0,
+                                    events_dir=tmp_path / "runs", ledger_path=tmp_path / "l.jsonl"))
+    events = [json.loads(l) for l in (tmp_path / "runs" / result.run_id / "events.jsonl").read_text().splitlines()]
+    assert "details" not in evaluate_events(events, demo / "storm" / "labels")
+    rows = evaluate_events(events, demo / "storm" / "labels", details=True)["details"]
+    assert len(rows) == 6 and abs(rows[0]["error"]) == 3.0   # the fake over-calls the three undamaged tiles
+
+
+def test_a_numeric_tool_score_beats_the_label_in_predictions():
+    events = [tile_event("a", calls=[("classifier", "minor-damage", 0.9)])]
+    events[0]["tile"]["tool_calls"][0]["score"] = 0.4
+    assert predictions_from_events(events)["scores"] == {"a": 0.4}

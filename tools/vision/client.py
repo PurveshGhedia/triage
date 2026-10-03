@@ -29,11 +29,15 @@ from shared.tool_interface import ToolClient, ToolResult
 from tools.vision.prompts import (
     ACCESS_LABELS,
     ACCESS_PROMPT,
+    DAMAGE_FRACTIONS_PROMPT,
     DAMAGE_LABELS,
     DAMAGE_PROMPT,
     PROMPT_VERSION,
+    SECOND_PASS_FRACTIONS_PROMPT,
     SECOND_PASS_PROMPT,
 )
+
+VARIANTS = ("classes", "fractions")
 
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_CACHE_DIR = Path("data/cache/vision")
@@ -45,6 +49,15 @@ GenerateFn = Callable[[list[Image], str, type[BaseModel]], str]
 
 class DamageReading(BaseModel):
     label: Literal["no-damage", "minor-damage", "major-damage", "destroyed"]
+    confidence: float
+    evidence: str
+
+
+class FractionReading(BaseModel):
+    no_damage: float
+    minor_damage: float
+    major_damage: float
+    destroyed: float
     confidence: float
     evidence: str
 
@@ -118,6 +131,45 @@ def parse_reading(text: str, allowed_labels: list[str]) -> tuple[str, float, str
     return label, round(confidence, 2), str(data.get("evidence") or "").strip()[:400]
 
 
+def parse_fractions(text: str) -> dict:
+    """Shares of buildings per damage level -> {label, score, confidence, evidence, fractions}.
+
+    The score is the expected damage on the 0-3 scale (the same scale as xBD's per-tile mean); the
+    label is the nearest class to it. Shares are re-normalised to sum to 1 if they are close; wildly
+    wrong ones raise ValueError so the agent retries."""
+    if not text or not text.strip():
+        raise ValueError("empty response from vision model")
+    try:
+        data = json.loads(_FENCE.sub("", text.strip()))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"vision model did not return JSON: {text[:120]!r}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("vision model JSON was not an object")
+    keys = ["no_damage", "minor_damage", "major_damage", "destroyed"]
+    try:
+        shares = [float(data[k]) for k in keys]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"missing or non-numeric damage shares in {text[:120]!r}") from exc
+    if any(x < 0 or x > 1.0001 for x in shares):
+        raise ValueError(f"damage shares must each be between 0 and 1, got {shares}")
+    total = sum(shares)
+    if not 0.5 <= total <= 1.5:
+        raise ValueError(f"damage shares should add up to about 1, got {total:.2f}")
+    shares = [x / total for x in shares]
+    score = round(sum(i * x for i, x in enumerate(shares)), 3)
+    try:
+        confidence = float(data.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    return {
+        "label": DAMAGE_LABELS[min(3, int(score + 0.5))],
+        "score": score,
+        "confidence": round(min(1.0, max(0.0, confidence)), 2),
+        "evidence": str(data.get("evidence") or "").strip()[:400],
+        "fractions": [round(x, 3) for x in shares],
+    }
+
+
 # --- the real model call -----------------------------------------------------------------
 
 
@@ -181,6 +233,19 @@ class _VisionTool(ToolClient):
         h.update(f"|{self.name}|{self.model}|{PROMPT_VERSION}|{self.prompt}".encode())
         return h.hexdigest()
 
+    def _parse(self, text: str) -> dict:
+        label, confidence, evidence = parse_reading(text, self.labels)
+        return {"label": label, "confidence": confidence, "evidence": evidence, "score": None}
+
+    def _check_cached(self, data: dict) -> dict:
+        """Validate a cache entry; raises ValueError if it is unusable."""
+        if data.get("label") not in self.labels:
+            raise ValueError("bad cached label")
+        data["confidence"] = float(data["confidence"])
+        if data.get("score") is not None:
+            data["score"] = float(data["score"])
+        return data
+
     def run(self, tile_path: str) -> ToolResult:
         images: list[Image] = []
         pre = pre_path_for(tile_path) if self.use_pre else None
@@ -190,44 +255,62 @@ class _VisionTool(ToolClient):
 
         cache_file = self.cache_dir / f"{self.name}-{self._cache_key(images)}.json"
         cached = False
+        reading: dict = {}
         if cache_file.is_file():
             try:
-                label, confidence, evidence = parse_reading(cache_file.read_text(), self.labels)
+                reading = self._check_cached(json.loads(cache_file.read_text()))
                 cached = True
-            except ValueError:
+            except (ValueError, KeyError, TypeError):
                 cache_file.unlink(missing_ok=True)  # corrupt cache entry: ask the model again
         if not cached:
-            text = self._generate(images)
-            label, confidence, evidence = parse_reading(text, self.labels)  # raises -> agent retries
+            reading = self._parse(self._generate(images))  # raises -> agent retries
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(json.dumps({"label": label, "confidence": confidence, "evidence": evidence}))
+            cache_file.write_text(json.dumps(reading))
 
         return ToolResult(
             tool_name=self.name,
-            confidence=confidence,
-            label=label,
-            raw_output={"evidence": evidence, "model": self.model, "cached": cached,
+            confidence=reading["confidence"],
+            label=reading["label"],
+            raw_output={"evidence": reading.get("evidence", ""), "score": reading.get("score"),
+                        "fractions": reading.get("fractions"), "model": self.model, "cached": cached,
                         "images": len(images), "has_before": pre is not None},
         )
 
 
 class GeminiDamageTool(_VisionTool):
-    """Damage level on the xBD four-class scale, from the before/after pair."""
+    """Damage level on the xBD four-class scale, from the before/after pair.
+
+    variant 'classes' (default): one level for the tile. variant 'fractions': the share of
+    buildings at each level, from which a continuous 0-3 score is computed (matching xBD's
+    per-tile mean). Choose with the argument or the TRIAGE_VISION_VARIANT environment variable."""
 
     labels = DAMAGE_LABELS
     schema = DamageReading
     provides_damage = True
 
-    def __init__(self, name: str = "classifier", second_pass: bool = False, **kwargs) -> None:
+    def __init__(self, name: str = "classifier", second_pass: bool = False,
+                 variant: str | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.name = name
-        self.prompt = SECOND_PASS_PROMPT if second_pass else DAMAGE_PROMPT
+        self.variant = variant or os.environ.get("TRIAGE_VISION_VARIANT", "classes")
+        if self.variant not in VARIANTS:
+            raise ValueError(f"variant must be one of {VARIANTS}, got {self.variant!r}")
+        if self.variant == "fractions":
+            self.schema = FractionReading
+            self.prompt = SECOND_PASS_FRACTIONS_PROMPT if second_pass else DAMAGE_FRACTIONS_PROMPT
+        else:
+            self.prompt = SECOND_PASS_PROMPT if second_pass else DAMAGE_PROMPT
         self.description = (
             "Gemini building-by-building second review of the before/after pair (xBD damage scale)."
             if second_pass else
             "Gemini damage assessment of the before/after pair on the xBD scale "
             "(no-damage / minor-damage / major-damage / destroyed)."
         )
+
+    def _parse(self, text: str) -> dict:
+        if self.variant == "fractions":
+            return parse_fractions(text)
+        return super()._parse(text)
 
 
 class GeminiAccessTool(_VisionTool):

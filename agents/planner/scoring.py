@@ -57,6 +57,8 @@ def tile_damage_score(tile: TileAssessment) -> float:
     if not damage_calls:
         return 0.0
     best = max(damage_calls, key=lambda r: r.confidence)
+    if getattr(best, "score", None) is not None:  # a tool's own finer 0-3 estimate beats the label
+        return float(best.score)
     return DAMAGE_LABEL_SCORES.get(best.label, 0.0)
 
 

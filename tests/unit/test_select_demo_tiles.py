@@ -95,3 +95,29 @@ def test_recommend_radius_flags_when_the_target_cannot_be_met():
         geo, ["far_1_post_disaster", "far_2_post_disaster"], target_zones=1, radii=(300.0, 600.0)
     )
     assert cap_hit is True and zones == 2 and radius == 600.0
+
+
+# --- clearing stale output ------------------------------------------------------------------------
+
+from scripts.select_demo_tiles import reset_output_dir
+
+
+def test_reset_output_dir_clears_only_what_the_sampler_generates(tmp_path):
+    for sub in ("images", "pre", "labels", ".thumbs"):
+        (tmp_path / sub).mkdir()
+        (tmp_path / sub / "stale.png").write_bytes(b"x")
+    for name in ("geo.json", "demo.json", "footprints.json"):
+        (tmp_path / name).write_text("{}")
+    (tmp_path / "my_notes.txt").write_text("keep me")
+    (tmp_path / "other_dir").mkdir()
+
+    removed = reset_output_dir(tmp_path)
+
+    assert set(removed) == {"images", "pre", "labels", ".thumbs", "geo.json", "demo.json", "footprints.json"}
+    assert (tmp_path / "my_notes.txt").read_text() == "keep me" and (tmp_path / "other_dir").is_dir()
+    assert not (tmp_path / "images").exists()
+
+
+def test_reset_output_dir_on_an_empty_or_missing_folder_is_a_no_op(tmp_path):
+    assert reset_output_dir(tmp_path) == []
+    assert reset_output_dir(tmp_path / "does-not-exist") == []

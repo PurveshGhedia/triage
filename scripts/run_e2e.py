@@ -95,6 +95,9 @@ def main() -> None:
     parser.add_argument("--arrival-order", choices=ARRIVAL_ORDERS, default="sweep")
     parser.add_argument("--use-llm-selector", action="store_true",
                         help="Let Gemini choose which tool to try next (default: fixed order).")
+    parser.add_argument("--vision-variant", choices=["classes", "fractions"], default=None,
+                        help="Vision prompt: 'classes' (one level per tile) or 'fractions' (share of "
+                             "buildings per level -> continuous score). Default: classes.")
     parser.add_argument("--tools", choices=["mock", "vision"], default="mock",
                         help="mock: random stand-in tools. vision: Gemini looks at the real imagery.")
     parser.add_argument("--transport", choices=["inprocess", "a2a"], default="inprocess")
@@ -107,6 +110,10 @@ def main() -> None:
     parser.add_argument("--events-dir", type=Path, default=Path("data/runs"))
     args = parser.parse_args()
 
+    if args.vision_variant:
+        import os
+
+        os.environ["TRIAGE_VISION_VARIANT"] = args.vision_variant
     opts = RunOptions(
         disaster=args.disaster, demo_dir=args.demo_dir, batch_id=args.batch_id,
         radius_m=args.radius_m, rounds=args.rounds, per_tile_cap=args.per_tile_cap,

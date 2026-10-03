@@ -323,3 +323,117 @@ def test_vertex_generate_fn_builds_the_request_correctly(monkeypatch):
     assert seen["config"].response_mime_type == "application/json"
     assert seen["config"].temperature == 0.0
     assert seen["config"].thinking_config.thinking_budget == 0
+
+
+# --- variant "fractions": share of buildings per level -> continuous score ---------------------------
+
+from tools.vision.client import FractionReading, parse_fractions  # noqa: E402
+from tools.vision.prompts import DAMAGE_FRACTIONS_PROMPT, SECOND_PASS_FRACTIONS_PROMPT  # noqa: E402
+
+
+def shares(a, b, c, d, conf=0.8, evidence="x"):
+    return json.dumps({"no_damage": a, "minor_damage": b, "major_damage": c, "destroyed": d,
+                       "confidence": conf, "evidence": evidence})
+
+
+def test_fractions_become_an_expected_damage_score_and_nearest_label():
+    r = parse_fractions(shares(0.7, 0.2, 0.1, 0.0))
+    assert r["score"] == pytest.approx(0.4, abs=0.001) and r["label"] == "no-damage"
+    assert parse_fractions(shares(0.0, 0.5, 0.5, 0.0))["score"] == pytest.approx(1.5) and parse_fractions(shares(0.0, 0.5, 0.5, 0.0))["label"] == "major-damage"
+    assert parse_fractions(shares(0, 0, 0, 1))["score"] == 3.0 and parse_fractions(shares(0, 0, 0, 1))["label"] == "destroyed"
+    assert parse_fractions(shares(1, 0, 0, 0))["score"] == 0.0
+
+
+def test_fractions_that_are_a_little_off_are_renormalised():
+    r = parse_fractions(shares(0.6, 0.3, 0.3, 0.0))          # sums to 1.2
+    assert sum(r["fractions"]) == pytest.approx(1.0, abs=0.01)
+    assert r["score"] == pytest.approx((0.3 + 0.6) / 1.2, abs=0.01)
+
+
+@pytest.mark.parametrize("bad", [shares(0.1, 0.1, 0.0, 0.0), shares(0.9, 0.9, 0.9, 0.9), shares(-0.1, 0.5, 0.6, 0),
+                                 shares(2, 0, 0, 0), '{"no_damage": 1}', '{"no_damage": "lots", "minor_damage": 0, "major_damage": 0, "destroyed": 0}',
+                                 "", "not json", "[1]"])
+def test_unusable_fractions_raise_so_the_agent_retries(bad):
+    with pytest.raises(ValueError):
+        parse_fractions(bad)
+
+
+def test_fractions_confidence_is_clamped_and_json_fences_are_accepted():
+    assert parse_fractions(shares(1, 0, 0, 0, conf=9))["confidence"] == 1.0
+    fenced = "```json\n" + shares(1, 0, 0, 0) + "\n```"
+    assert parse_fractions(fenced)["label"] == "no-damage"
+
+
+def test_fractions_tool_uses_its_own_prompt_schema_and_reports_the_score(demo, tmp_path):
+    post, _ = demo
+    model = FakeModel(shares(0.5, 0.3, 0.2, 0.0, conf=0.7, evidence="some flooded homes"))
+    tool = damage_tool(model, tmp_path, variant="fractions")
+    result = tool.run(str(post))
+
+    assert model.calls[0]["prompt"] == DAMAGE_FRACTIONS_PROMPT and model.calls[0]["schema"] is FractionReading
+    assert result.raw_output["score"] == pytest.approx(0.7, abs=0.001) and result.label == "minor-damage"
+    assert result.confidence == 0.7 and result.raw_output["evidence"] == "some flooded homes"
+    second = damage_tool(model, tmp_path, name="sam", second_pass=True, variant="fractions")
+    second.run(str(post))
+    assert model.calls[-1]["prompt"] == SECOND_PASS_FRACTIONS_PROMPT
+
+
+def test_fractions_answers_are_cached_with_their_score(demo, tmp_path):
+    post, _ = demo
+    model = FakeModel(shares(0.5, 0.3, 0.2, 0.0))
+    damage_tool(model, tmp_path, variant="fractions").run(str(post))
+    again = damage_tool(FakeModel("never called"), tmp_path, variant="fractions").run(str(post))
+    assert again.raw_output["cached"] is True and again.raw_output["score"] == pytest.approx(0.7, abs=0.001)
+
+
+def test_classes_and_fractions_never_share_cache_entries(demo, tmp_path):
+    post, _ = demo
+    model = FakeModel()
+    damage_tool(model, tmp_path, variant="classes").run(str(post))
+    model.reply = shares(0.5, 0.3, 0.2, 0.0)
+    result = damage_tool(model, tmp_path, variant="fractions").run(str(post))
+    assert len(model.calls) == 2 and result.raw_output["cached"] is False
+
+
+def test_old_cache_entries_without_a_score_still_load(demo, tmp_path):
+    post, _ = demo
+    model = FakeModel()
+    tool = damage_tool(model, tmp_path)
+    tool.run(str(post))
+    for f in (tmp_path / "cache").glob("*.json"):
+        f.write_text(json.dumps({"label": "minor-damage", "confidence": 0.6, "evidence": "old format"}))  # pre-score format
+    result = tool.run(str(post))
+    assert result.label == "minor-damage" and result.raw_output["cached"] is True and result.raw_output["score"] is None
+
+
+def test_variant_is_chosen_by_argument_or_environment_and_validated(monkeypatch):
+    assert GeminiDamageTool().variant == "classes"
+    monkeypatch.setenv("TRIAGE_VISION_VARIANT", "fractions")
+    assert GeminiDamageTool().variant == "fractions"
+    assert GeminiDamageTool(variant="classes").variant == "classes"
+    with pytest.raises(ValueError):
+        GeminiDamageTool(variant="vibes")
+
+
+def test_the_score_reaches_the_record_the_event_and_the_planner(demo, tmp_path):
+    from agents.perception.schemas import ToolCallRecord
+    from agents.planner.scoring import score_zone, tile_damage_score
+
+    post, _ = demo
+
+    class Router(FakeModel):
+        def __call__(self, images, prompt, schema):
+            if "ROAD ACCESS" in prompt:
+                return json.dumps({"label": "access-clear", "confidence": 0.8, "evidence": "ok"})
+            return shares(0.7, 0.2, 0.1, 0.0, conf=0.9)
+
+    tools = [GeminiDamageTool(generate_fn=Router(), cache_dir=tmp_path / "c", variant="fractions"),
+             GeminiAccessTool(generate_fn=Router(), cache_dir=tmp_path / "c")]
+    tile = PerceptionAgent(tools=tools, run_auxiliary_tools=True, sleep=lambda s: None).process_tile("t", str(post))
+
+    assert tile.tool_call_history[0].score == pytest.approx(0.4, abs=0.001)
+    assert tile_summary(tile)["tool_calls"][0]["score"] == pytest.approx(0.4, abs=0.001)
+    assert tile_damage_score(tile) == pytest.approx(0.4, abs=0.001)           # not the label's 0.0
+    assert score_zone([tile])[0] == pytest.approx(0.4, abs=0.001)
+    legacy = ToolCallRecord(tool_name="classifier", confidence=0.9, label="major-damage")   # no score: label table
+    assert tile_damage_score(tile.model_copy(update={"tool_call_history": [legacy]})) == 2.0

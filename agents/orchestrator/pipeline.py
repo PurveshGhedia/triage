@@ -76,6 +76,7 @@ def tile_summary(a: TileAssessment) -> dict:
                 "confidence": r.confidence,
                 "reasoning": r.selection_reasoning,
                 "evidence": r.evidence,
+                "score": r.score,
             }
             for r in a.tool_call_history
         ],

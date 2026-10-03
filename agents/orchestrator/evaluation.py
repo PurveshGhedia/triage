@@ -65,7 +65,7 @@ def predictions_from_events(events: list[dict]) -> dict:
             escalated.append(tile_id)
             continue
         best = max(calls, key=lambda c: c["confidence"])
-        scores[tile_id] = DAMAGE_LABEL_SCORES.get(best["label"], 0.0)
+        scores[tile_id] = best["score"] if best.get("score") is not None else DAMAGE_LABEL_SCORES.get(best["label"], 0.0)
     return {"scores": scores, "escalated": sorted(escalated), "zones": zones}
 
 
@@ -105,6 +105,19 @@ def evaluate(predictions: dict, truth: dict[str, dict]) -> dict:
     return {"tiles": tile_metrics, "zones": zone_metrics}
 
 
+def tile_table(predictions: dict, truth: dict[str, dict]) -> list[dict]:
+    """One row per scored tile, worst disagreements first: where is the run wrong, and how?"""
+    rows = []
+    for tile_id, pred in predictions["scores"].items():
+        t = truth.get(tile_id)
+        if not t or t.get("mean") is None:
+            continue
+        rows.append({"tile_id": tile_id, "predicted": round(pred, 2), "truth_mean": t["mean"],
+                     "truth_worst": t["worst"], "buildings": t["buildings"],
+                     "error": round(pred - t["mean"], 2)})
+    return sorted(rows, key=lambda r: -abs(r["error"]))
+
+
 def truth_for_tiles(labels_dir: str | Path, tile_ids: list[str]) -> dict[str, dict]:
     truth = {}
     for tile_id in tile_ids:
@@ -114,7 +127,11 @@ def truth_for_tiles(labels_dir: str | Path, tile_ids: list[str]) -> dict[str, di
     return truth
 
 
-def evaluate_events(events: list[dict], labels_dir: str | Path) -> dict:
+def evaluate_events(events: list[dict], labels_dir: str | Path, details: bool = False) -> dict:
     predictions = predictions_from_events(events)
     ids = list(predictions["scores"]) + predictions["escalated"]
-    return evaluate(predictions, truth_for_tiles(labels_dir, ids))
+    truth = truth_for_tiles(labels_dir, ids)
+    result = evaluate(predictions, truth)
+    if details:
+        result["details"] = tile_table(predictions, truth)
+    return result

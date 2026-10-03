@@ -362,7 +362,8 @@
     if (t.confidence !== null && t.confidence !== undefined) parts.push(h("div", {}, "Confidence " + t.confidence));
     if (t.failure_reason) parts.push(h("div", { class: "tag conflict" }, t.failure_reason));
     const steps = (t.tool_calls || []).map((c) => h("div", { class: "step" },
-      h("b", {}, c.tool), " → " + c.label + " (" + c.confidence + ")",
+      h("b", {}, c.tool), " → " + c.label + " (" + c.confidence + ")" +
+        (c.score !== null && c.score !== undefined ? " · est. " + Number(c.score).toFixed(2) + "/3" : ""),
       c.evidence ? h("div", { class: "seen" }, "sees: " + c.evidence) : null,
       c.reasoning ? h("div", { class: "why" }, "“" + c.reasoning + "”") : null));
     (t.reinspections || []).forEach((r) => {
