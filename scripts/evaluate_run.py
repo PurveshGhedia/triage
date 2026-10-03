@@ -26,12 +26,14 @@ def newest_run(runs_dir: Path) -> str | None:
     return max(candidates, key=lambda d: d.stat().st_mtime).name if candidates else None
 
 
-def evaluate_run(run_id: str, runs_dir: Path, demo_root: Path, details: bool = False) -> dict:
+def evaluate_run(run_id: str, runs_dir: Path, demo_root: Path, details: bool = False,
+                 min_buildings: int = 0) -> dict:
     events = read_events(runs_dir / run_id / "events.jsonl")
     started = next((e for e in events if e["type"] == "run_started"), None)
     if started is None or not started.get("disaster"):
         raise ValueError(f"run {run_id} has no disaster recorded")
-    result = evaluate_events(events, demo_root / started["disaster"] / "labels", details=details)
+    result = evaluate_events(events, demo_root / started["disaster"] / "labels", details=details,
+                             min_buildings=min_buildings)
     result["run"] = {"run_id": run_id, "disaster": started["disaster"], "tools": started.get("tools", "mock")}
     return result
 
@@ -40,7 +42,13 @@ def show(r: dict) -> None:
     t, z, run = r["tiles"], r["zones"], r["run"]
     fmt = lambda v: "n/a" if v is None else v
     print(f"{run['run_id']}  {run['disaster']}  tools={run['tools']}")
-    print(f"  tiles compared: {t['tiles_compared']}  (escalated, not scored: {t['tiles_escalated']})")
+    print(f"  tiles compared: {t['tiles_compared']}  (escalated, not scored: {t['tiles_escalated']}"
+          + (f"; skipped for having < {r['min_buildings']} labelled buildings: {t['tiles_excluded_small']}" if r.get("min_buildings") else "")
+          + ")")
+    print(f"  truth in these tiles: {t['truth_damaged_tiles']} damaged (mean >= 0.5), {t['truth_undamaged_tiles']} undamaged")
+    if not t["informative"]:
+        print("  !! NOT INFORMATIVE: this area is almost all one kind of tile, so even 'predict no damage everywhere'")
+        print("     would score well. Judge the assessor on a scenario with a mix of damaged and undamaged tiles.")
     print(f"  tile rank correlation (Spearman): {fmt(t['spearman'])}   (1 = same order as the experts, 0 = unrelated)")
     print(f"  mean abs error: {fmt(t['mean_abs_error'])}  vs constant-guess baseline {fmt(t['baseline_mean_abs_error'])}   (0-3 scale; lower is better)")
     print(f"  tiles within one damage level: {fmt(t['within_one_level'])}")
@@ -66,6 +74,8 @@ def main() -> None:
     parser.add_argument("--demo-root", type=Path, default=Path("data/demo"))
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--details", action="store_true", help="Per-tile table of the worst disagreements.")
+    parser.add_argument("--min-buildings", type=int, default=10,
+                        help="Skip tiles with fewer labelled buildings (their truth is too noisy). 0 = keep all.")
     args = parser.parse_args()
 
     run_ids = args.compare or [args.run_id or newest_run(args.runs_dir)]
@@ -74,7 +84,8 @@ def main() -> None:
     results = []
     for rid in run_ids:
         try:
-            results.append(evaluate_run(rid, args.runs_dir, args.demo_root, details=args.details))
+            results.append(evaluate_run(rid, args.runs_dir, args.demo_root, details=args.details,
+                                          min_buildings=args.min_buildings))
         except (ValueError, FileNotFoundError) as exc:
             sys.exit(str(exc))
     for r in results:

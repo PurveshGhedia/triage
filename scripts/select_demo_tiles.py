@@ -69,6 +69,54 @@ def select_clustered(
     return ordered[: min(count, len(ordered))]
 
 
+def damage_mix(tiles: list[str], truth: dict[str, dict], min_buildings: int = 10) -> dict:
+    """How many of `tiles` are truly damaged (xBD mean >= 0.5), undamaged, or too small to judge."""
+    damaged = undamaged = small = 0
+    for t in tiles:
+        info = truth.get(t)
+        if not info or info.get("mean") is None or info.get("buildings", 0) < min_buildings:
+            small += 1
+        elif info["mean"] >= 0.5:
+            damaged += 1
+        else:
+            undamaged += 1
+    return {"damaged": damaged, "undamaged": undamaged, "too_small": small}
+
+
+def select_informative(
+    geo: dict,
+    disaster: str,
+    count: int,
+    truth: dict[str, dict],
+    min_buildings: int = 10,
+) -> list[str]:
+    """The compact group of `count` tiles that contains the best MIX of damaged and undamaged tiles.
+
+    Every post-disaster tile is tried as a seed; its `count` nearest neighbours are scored by how
+    evenly they split between damaged and undamaged (0.5 = perfectly mixed), minus a small penalty
+    for being spread out. xBD truth is used here only to choose WHICH area to show, never by the
+    agents; it does mean the demo area is not a random sample, which should be said in the report.
+    Falls back to the densest cluster if no area has both kinds of tile."""
+    candidates = post_tiles_for(geo, disaster)
+    if not candidates:
+        raise ValueError(f"No geolocated post-disaster tiles found for '{disaster}'")
+    best: tuple[float, str, list[str]] | None = None
+    for seed in candidates:
+        ordered = sorted(candidates, key=lambda t: (_dist(geo, seed, t), t))[: min(count, len(candidates))]
+        mix = damage_mix(ordered, truth, min_buildings)
+        judged = mix["damaged"] + mix["undamaged"]
+        if judged < max(4, len(ordered) // 2) or mix["damaged"] < 2 or mix["undamaged"] < 2:
+            continue
+        balance = min(mix["damaged"], mix["undamaged"]) / judged
+        spread_km = sum(_dist(geo, seed, t) for t in ordered) / len(ordered) / 1000
+        score = balance - 0.1 * spread_km
+        if best is None or (score, seed) > (best[0], best[1]):
+            best = (score, seed, ordered)
+    if best is None:
+        return select_clustered(geo, disaster, count)
+    return best[2]
+
+
 def zones_at_radii(geo: dict, tiles: list[str], radii=RADII_TO_REPORT) -> dict[float, int]:
     """How many connected zones these tiles form at each adjacency radius."""
     result = {}
@@ -138,6 +186,9 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--cluster-radius-m", type=float, default=1500.0)
     parser.add_argument("--seed-tile", default=None)
+    parser.add_argument("--informative", action="store_true",
+                        help="Choose the area with the best mix of damaged and undamaged tiles (uses xBD "
+                             "labels to PICK the area; the agents never see them).")
     parser.add_argument("--keep-existing", action="store_true",
                         help="Do not clear files from an earlier run in the output folder first.")
     parser.add_argument(
@@ -148,10 +199,20 @@ def main() -> None:
     args = parser.parse_args()
 
     geo = json.loads(args.geo_file.read_text())
+    truth: dict[str, dict] = {}
     try:
-        tiles = select_clustered(
-            geo, args.disaster, args.count, args.cluster_radius_m, args.seed_tile
-        )
+        if args.informative and not args.seed_tile:
+            from shared.truth import ground_truth
+
+            for tile in post_tiles_for(geo, args.disaster):
+                label = args.xbd_dir / "labels" / f"{tile}.json"
+                if label.is_file():
+                    truth[tile] = ground_truth(label)
+            tiles = select_informative(geo, args.disaster, args.count, truth)
+        else:
+            tiles = select_clustered(
+                geo, args.disaster, args.count, args.cluster_radius_m, args.seed_tile
+            )
     except ValueError as exc:
         sys.exit(str(exc))
 
@@ -169,6 +230,10 @@ def main() -> None:
     (out_dir / "geo.json").write_text(json.dumps({t: geo[t] for t in tiles}, indent=2))
 
     print(f"{args.disaster}: selected {len(tiles)} tiles -> {out_dir}")
+    if truth:
+        mix = damage_mix(tiles, truth)
+        print(f"  xBD truth in this area: {mix['damaged']} damaged, {mix['undamaged']} undamaged, "
+              f"{mix['too_small']} too small to judge (chosen for variety, not random)")
     print(f"  copied: {copied['post']} post, {copied['pre']} pre, {copied['labels']} label files")
     print("  zones formed at each adjacency radius (fewer = better connected):")
     for radius, n in zones_at_radii(geo, tiles).items():

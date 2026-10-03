@@ -73,18 +73,35 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
-def evaluate(predictions: dict, truth: dict[str, dict]) -> dict:
-    """Compare predictions with truth ({tile_id: ground_truth(...)}); see module docstring."""
+def _usable(truth: dict[str, dict], tile_id: str, min_buildings: int) -> bool:
+    t = truth.get(tile_id)
+    return bool(t) and t.get("mean") is not None and t.get("buildings", 0) >= min_buildings
+
+
+def evaluate(predictions: dict, truth: dict[str, dict], min_buildings: int = 0) -> dict:
+    """Compare predictions with truth ({tile_id: ground_truth(...)}); see module docstring.
+
+    `min_buildings`: skip tiles with fewer labelled buildings than this. A tile whose "truth" is
+    one to four buildings is mostly noise (a single building flips its mean from 0 to 3)."""
+    small = [t for t in predictions["scores"] if t in truth and truth[t].get("mean") is not None
+             and truth[t].get("buildings", 0) < min_buildings]
     pairs = [(predictions["scores"][t], truth[t]["mean"]) for t in predictions["scores"]
-             if t in truth and truth[t].get("mean") is not None]
+             if _usable(truth, t, min_buildings)]
     preds = [p for p, _ in pairs]
     means = [m for _, m in pairs]
     errors = [abs(p - m) for p, m in pairs]
     median_truth = sorted(means)[len(means) // 2] if means else 0.0
 
+    damaged = sum(1 for m in means if m >= 0.5)
     tile_metrics = {
         "tiles_compared": len(pairs),
         "tiles_escalated": len(predictions["escalated"]),
+        "tiles_excluded_small": len(small),
+        "truth_damaged_tiles": damaged,                 # tiles whose true mean damage is at least 0.5
+        "truth_undamaged_tiles": len(means) - damaged,
+        # A scenario can only separate a good assessor from a lazy one if it contains both
+        # damaged and undamaged tiles; otherwise "predict no damage everywhere" scores perfectly.
+        "informative": damaged >= 2 and len(means) - damaged >= 2,
         "spearman": spearman(preds, means),
         "mean_abs_error": round(_mean(errors), 2) if errors else None,
         "baseline_mean_abs_error": round(_mean([abs(median_truth - m) for m in means]), 2) if means else None,
@@ -94,7 +111,7 @@ def evaluate(predictions: dict, truth: dict[str, dict]) -> dict:
     zone_pairs = []
     for z in predictions["zones"]:
         member = [(truth[t]["mean"], truth[t]["buildings"]) for t in z["tile_ids"]
-                  if t in truth and truth[t].get("mean") is not None and truth[t]["buildings"]]
+                  if _usable(truth, t, max(1, min_buildings))]
         weight = sum(b for _, b in member)
         if weight:
             zone_pairs.append((z["damage_score"], sum(m * b for m, b in member) / weight))
@@ -105,12 +122,12 @@ def evaluate(predictions: dict, truth: dict[str, dict]) -> dict:
     return {"tiles": tile_metrics, "zones": zone_metrics}
 
 
-def tile_table(predictions: dict, truth: dict[str, dict]) -> list[dict]:
+def tile_table(predictions: dict, truth: dict[str, dict], min_buildings: int = 0) -> list[dict]:
     """One row per scored tile, worst disagreements first: where is the run wrong, and how?"""
     rows = []
     for tile_id, pred in predictions["scores"].items():
         t = truth.get(tile_id)
-        if not t or t.get("mean") is None:
+        if not _usable(truth, tile_id, min_buildings):
             continue
         rows.append({"tile_id": tile_id, "predicted": round(pred, 2), "truth_mean": t["mean"],
                      "truth_worst": t["worst"], "buildings": t["buildings"],
@@ -127,11 +144,13 @@ def truth_for_tiles(labels_dir: str | Path, tile_ids: list[str]) -> dict[str, di
     return truth
 
 
-def evaluate_events(events: list[dict], labels_dir: str | Path, details: bool = False) -> dict:
+def evaluate_events(events: list[dict], labels_dir: str | Path, details: bool = False,
+                    min_buildings: int = 0) -> dict:
     predictions = predictions_from_events(events)
     ids = list(predictions["scores"]) + predictions["escalated"]
     truth = truth_for_tiles(labels_dir, ids)
-    result = evaluate(predictions, truth)
+    result = evaluate(predictions, truth, min_buildings=min_buildings)
+    result["min_buildings"] = min_buildings
     if details:
-        result["details"] = tile_table(predictions, truth)
+        result["details"] = tile_table(predictions, truth, min_buildings)
     return result

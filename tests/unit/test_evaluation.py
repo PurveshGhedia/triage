@@ -251,3 +251,46 @@ def test_a_numeric_tool_score_beats_the_label_in_predictions():
     events = [tile_event("a", calls=[("classifier", "minor-damage", 0.9)])]
     events[0]["tile"]["tool_calls"][0]["score"] = 0.4
     assert predictions_from_events(events)["scores"] == {"a": 0.4}
+
+
+# --- small tiles and uninformative scenarios -------------------------------------------------------
+
+
+def test_tiles_with_too_few_labelled_buildings_can_be_excluded():
+    preds = {"scores": {"a": 0.0, "b": 3.0, "c": 1.0, "d": 1.0}, "escalated": [], "zones": []}
+    t = {"a": truth(0.0, 40), "b": truth(0.0, 1), "c": truth(1.0, 30), "d": truth(1.2, 25)}   # b: one building
+    everything = evaluate(preds, t)["tiles"]
+    filtered = evaluate(preds, t, min_buildings=10)["tiles"]
+    assert everything["tiles_compared"] == 4 and everything["tiles_excluded_small"] == 0
+    assert filtered["tiles_compared"] == 3 and filtered["tiles_excluded_small"] == 1
+    assert filtered["mean_abs_error"] < everything["mean_abs_error"]          # the noisy tile no longer dominates
+
+
+def test_tile_table_respects_the_building_threshold():
+    from agents.orchestrator.evaluation import tile_table
+
+    preds = {"scores": {"a": 3.0, "b": 1.0}, "escalated": [], "zones": []}
+    t = {"a": truth(0.0, 1), "b": truth(1.0, 50)}
+    assert [r["tile_id"] for r in tile_table(preds, t, min_buildings=10)] == ["b"]
+    assert [r["tile_id"] for r in tile_table(preds, t)] == ["a", "b"]
+
+
+def test_a_scenario_with_no_damage_is_flagged_as_uninformative():
+    preds = {"scores": {f"t{i}": 0.0 for i in range(6)}, "escalated": [], "zones": []}
+    quiet = {f"t{i}": truth(0.0) for i in range(6)}
+    m = evaluate(preds, quiet)["tiles"]
+    assert m["informative"] is False and m["truth_damaged_tiles"] == 0 and m["mean_abs_error"] == 0.0
+
+
+def test_a_mixed_scenario_is_informative_and_a_lazy_guess_scores_badly_on_it():
+    t = {f"t{i}": truth(0.0 if i < 3 else 2.5) for i in range(6)}
+    lazy = {"scores": {f"t{i}": 0.0 for i in range(6)}, "escalated": [], "zones": []}
+    m = evaluate(lazy, t)["tiles"]
+    assert m["informative"] is True and (m["truth_damaged_tiles"], m["truth_undamaged_tiles"]) == (3, 3)
+    assert m["mean_abs_error"] == 1.25
+
+
+def test_one_damaged_tile_is_not_enough_to_call_a_scenario_informative():
+    t = {"a": truth(0.0), "b": truth(0.0), "c": truth(0.0), "d": truth(2.0)}
+    preds = {"scores": {k: 0.0 for k in t}, "escalated": [], "zones": []}
+    assert evaluate(preds, t)["tiles"]["informative"] is False

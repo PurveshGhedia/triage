@@ -121,3 +121,65 @@ def test_reset_output_dir_clears_only_what_the_sampler_generates(tmp_path):
 def test_reset_output_dir_on_an_empty_or_missing_folder_is_a_no_op(tmp_path):
     assert reset_output_dir(tmp_path) == []
     assert reset_output_dir(tmp_path / "does-not-exist") == []
+
+
+# --- informative selection (pick an area with a mix of damage) -----------------------------------------
+
+from scripts.select_demo_tiles import damage_mix, select_informative
+
+
+def mixed_world():
+    """Cluster A: 8 tiles, all undamaged, very dense. Cluster B: 8 tiles, half damaged, half not."""
+    geo, truth = {}, {}
+    for i in range(8):
+        t = f"storm_{i:08d}_post_disaster"
+        geo[t] = {"latitude": 10.0 + i * 0.0005, "longitude": 20.0}                 # ~55 m apart
+        truth[t] = {"mean": 0.0, "buildings": 40, "worst": 0}
+    for i in range(8):
+        t = f"storm_{100 + i:08d}_post_disaster"
+        geo[t] = {"latitude": 11.0 + i * 0.003, "longitude": 21.0}                  # ~330 m apart
+        truth[t] = {"mean": 0.1 if i % 2 else 2.5, "buildings": 40, "worst": 3}
+    return geo, truth
+
+
+def test_damage_mix_counts_damaged_undamaged_and_too_small():
+    truth = {"a": {"mean": 2.0, "buildings": 30}, "b": {"mean": 0.1, "buildings": 30},
+             "c": {"mean": 3.0, "buildings": 2}, "d": {"mean": None, "buildings": 0}}
+    assert damage_mix(["a", "b", "c", "d", "ghost"], truth) == {"damaged": 1, "undamaged": 1, "too_small": 3}
+
+
+def test_informative_selection_prefers_the_mixed_area_over_the_denser_quiet_one():
+    geo, truth = mixed_world()
+    plain = select_clustered(geo, "storm", 8)
+    picked = select_informative(geo, "storm", 8, truth)
+    assert all(int(t.split("_")[1]) < 100 for t in plain)                           # plain picks the dense quiet cluster
+    assert all(int(t.split("_")[1]) >= 100 for t in picked)                         # informative picks the mixed one
+    mix = damage_mix(picked, truth)
+    assert mix["damaged"] == 4 and mix["undamaged"] == 4
+
+
+def test_informative_selection_is_deterministic_and_respects_the_count():
+    geo, truth = mixed_world()
+    assert select_informative(geo, "storm", 8, truth) == select_informative(geo, "storm", 8, truth)
+    assert len(select_informative(geo, "storm", 6, truth)) == 6
+
+
+def test_informative_selection_falls_back_to_the_densest_cluster_when_nothing_is_mixed():
+    geo, _ = mixed_world()
+    quiet = {t: {"mean": 0.0, "buildings": 40, "worst": 0} for t in geo}
+    assert select_informative(geo, "storm", 8, quiet) == select_clustered(geo, "storm", 8)
+
+
+def test_tiny_tiles_do_not_make_an_area_look_informative():
+    geo, truth = mixed_world()
+    for t in truth:
+        if int(t.split("_")[1]) >= 100:
+            truth[t]["buildings"] = 3                                              # every damaged tile has 3 buildings
+    picked = select_informative(geo, "storm", 8, truth)
+    assert picked == select_clustered(geo, "storm", 8)                              # nothing credible -> fallback
+
+
+def test_informative_selection_unknown_disaster_raises():
+    geo, truth = mixed_world()
+    with pytest.raises(ValueError):
+        select_informative(geo, "volcano", 8, truth)
