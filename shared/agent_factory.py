@@ -11,10 +11,29 @@ from tools.detector.client import DetectorClient
 from tools.sam.client import SAMClient
 
 
+TOOLS_MODES = ("mock", "vision")
+
+
+def build_tools(tools_mode: str = "mock") -> list:
+    """The three perception tools. 'mock': deterministic stand-ins that ignore the image.
+    'vision': Gemini looks at the real before/after imagery (see tools/vision). The tool
+    names stay classifier / detector / sam because Agent 2's scoring is keyed on them."""
+    if tools_mode == "mock":
+        return [ClassifierClient(), DetectorClient(), SAMClient()]
+    if tools_mode == "vision":
+        from tools.vision.client import GeminiAccessTool, GeminiDamageTool
+
+        return [GeminiDamageTool("classifier"), GeminiAccessTool("detector"),
+                GeminiDamageTool("sam", second_pass=True)]
+    raise ValueError(f"tools must be one of {TOOLS_MODES}, got {tools_mode!r}")
+
+
 def build_perception_agent(
-    use_llm_selector: bool = False, tool_order: tuple[str, ...] | None = None
+    use_llm_selector: bool = False,
+    tool_order: tuple[str, ...] | None = None,
+    tools_mode: str = "mock",
 ) -> PerceptionAgent:
-    tools = [ClassifierClient(), DetectorClient(), SAMClient()]
+    tools = build_tools(tools_mode)
     if tool_order:
         rank = {name: i for i, name in enumerate(tool_order)}
         tools.sort(key=lambda t: rank.get(t.name, len(rank)))
@@ -35,9 +54,9 @@ def build_perception_agent(
 SECOND_OPINION_ORDER = ("sam", "detector", "classifier")
 
 
-def build_second_opinion_agent(use_llm_selector: bool = False) -> PerceptionAgent:
+def build_second_opinion_agent(use_llm_selector: bool = False, tools_mode: str = "mock") -> PerceptionAgent:
     """Agent 1 configured for re-inspection: it consults the tools in a different
     order (SAM first), so a tile whose reading conflicts with its neighbours gets a
     genuinely independent second opinion instead of a repeat of the same call.
     """
-    return build_perception_agent(use_llm_selector, tool_order=SECOND_OPINION_ORDER)
+    return build_perception_agent(use_llm_selector, tool_order=SECOND_OPINION_ORDER, tools_mode=tools_mode)

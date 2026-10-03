@@ -34,6 +34,8 @@ class ToolCallRecord(BaseModel):
     confidence: float
     label: str
     selection_reasoning: str | None = None
+    # What the tool says it saw (vision tools only); shown in the dashboard timeline.
+    evidence: str | None = None
     called_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
@@ -45,6 +47,7 @@ class ToolCallRecord(BaseModel):
             confidence=result.confidence,
             label=result.label,
             selection_reasoning=selection_reasoning,
+            evidence=(getattr(result, "raw_output", None) or {}).get("evidence"),
         )
 
 

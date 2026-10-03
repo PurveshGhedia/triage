@@ -69,6 +69,7 @@
         state.run = {
           run_id: e.run_id, batch_id: e.batch_id, disaster: e.disaster || null,
           tile_count: e.tile_count, radius: e.adjacency_radius_m, streaming: !!e.wave_size,
+          tools: e.tools || "mock",
           started: e.ts,
         };
         (e.tiles || []).forEach(function (t) {
@@ -187,6 +188,15 @@
     return [[lat + dLat, lon - dLon], [lat + dLat, lon + dLon], [lat - dLat, lon + dLon], [lat - dLat, lon - dLon]];
   }
 
+  /* Where a tile is drawn: its true footprint when known (from the xBD label georeference),
+   * else a square of 2*halfM around the tile's reported centre. bounds = [[S, W], [N, E]]. */
+  function tileGeometry(tile, footprint, halfM) {
+    if (footprint && footprint.corners && footprint.bounds)
+      return { bounds: footprint.bounds, corners: footprint.corners, exact: true };
+    const c = tileCorners(tile.latitude, tile.longitude, halfM);
+    return { bounds: [[c[2][0], c[3][1]], [c[0][0], c[1][1]]], corners: c, exact: false };
+  }
+
   /* Convex hull (Andrew's monotone chain) of [lat, lon] points, returned as [lat, lon]. */
   function convexHull(points) {
     const pts = points.map(function (p) { return [p[1], p[0]]; })
@@ -217,7 +227,7 @@
 
   const api = {
     initialState, applyEvent, reduce, currentVersion, rankDiff, stats, zoneLabel, shortId,
-    damageScore, damageColor, priorityColor, tileColor, tileCorners, convexHull, replayDelayMs,
+    damageScore, damageColor, priorityColor, tileColor, tileCorners, tileGeometry, convexHull, replayDelayMs,
     MAX_PRIORITY: MAX_PRIORITY,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

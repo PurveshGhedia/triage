@@ -151,3 +151,22 @@ test("replay delay follows real gaps, scaled and clamped", () => {
   assert.equal(S.replayDelayMs("2026-10-02T10:00:00Z", "2026-10-02T10:00:00Z", 1), 25);    // floor
   assert.equal(S.replayDelayMs("2026-10-02T10:00:00Z", "2026-10-02T10:05:00Z", 1), 1200);  // ceiling
 });
+
+test("tileGeometry prefers the true footprint and falls back to a square", () => {
+  const fp = { bounds: [[10, 20], [10.01, 20.02]], corners: [[10.01, 20], [10.01, 20.02], [10, 20.02], [10, 20]] };
+  const exact = S.tileGeometry({ latitude: 99, longitude: 99 }, fp, 230);
+  assert.equal(exact.exact, true);
+  assert.deepEqual(exact.bounds, fp.bounds);
+  const approx = S.tileGeometry({ latitude: 10, longitude: 20 }, undefined, 230);
+  assert.equal(approx.exact, false);
+  assert.ok(approx.bounds[0][0] < 10 && approx.bounds[1][0] > 10);     // south < centre < north
+  assert.ok(approx.bounds[0][1] < 20 && approx.bounds[1][1] > 20);     // west < centre < east
+  assert.equal(approx.corners.length, 4);
+  assert.equal(S.tileGeometry({ latitude: 10, longitude: 20 }, { bounds: null }, 230).exact, false);  // malformed -> fallback
+});
+
+test("run records which tools were used, defaulting to mock", () => {
+  const mk = (extra) => S.reduce([ev("run_started", Object.assign({ batch_id: "b", tile_count: 0, adjacency_radius_m: 500, tiles: [] }, extra))]);
+  assert.equal(mk({}).run.tools, "mock");
+  assert.equal(mk({ tools: "vision" }).run.tools, "vision");
+});

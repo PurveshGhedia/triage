@@ -159,3 +159,45 @@ def test_real_launcher_runs_in_background_and_a_second_run_is_refused(world, tmp
     events = c.get(f"/api/runs/{run_id}/events").json()["events"]
     assert events[-1]["type"] == "run_finished"
     assert c.get("/api/runs").json()[0]["status"] == "finished"
+
+
+# --- footprints, evaluation, tools mode ----------------------------------------------------------
+
+
+def test_footprints_endpoint_returns_empty_until_built_then_the_file(world):
+    c = TestClient(create_app(world["runs"], world["demo"], launcher=lambda r: "x"))
+    assert c.get("/api/footprints/storm").json() == {}
+    fp = {"storm_00000001_post_disaster": {"bounds": [[1, 2], [3, 4]], "corners": [[3, 2], [3, 4], [1, 4], [1, 2]]}}
+    path = world["demo"] / "storm" / "footprints.json"
+    path.write_text(json.dumps(fp))
+    try:
+        assert c.get("/api/footprints/storm").json() == fp
+        assert c.get("/api/footprints/..%2f..").status_code in (400, 404)
+    finally:
+        path.unlink()
+
+
+def test_run_evaluation_endpoint_scores_a_run_against_labels(client, world):
+    r = client.get(f"/api/runs/{world['run_id']}/evaluation")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["run"] == {"run_id": world["run_id"], "disaster": "storm", "tools": "mock"}
+    assert body["tiles"]["tiles_compared"] + body["tiles"]["tiles_escalated"] == 6
+    assert set(body["tiles"]) >= {"spearman", "mean_abs_error", "baseline_mean_abs_error", "within_one_level"}
+    assert client.get("/api/runs/ghost/evaluation").status_code == 404
+
+
+def test_runs_listing_reports_which_tools_a_run_used(client, world):
+    r = next(x for x in client.get("/api/runs").json() if x["run_id"] == world["run_id"])
+    assert r["tools"] == "mock"
+
+
+def test_run_request_carries_tools_and_selector_choice_and_validates_them(world):
+    launched = []
+    c = TestClient(create_app(world["runs"], world["demo"], launcher=lambda req: launched.append(req) or "r1"))
+    ok = c.post("/api/runs", json={"disaster": "storm", "tools": "vision", "use_llm_selector": True})
+    assert ok.status_code == 200
+    assert launched[0].tools == "vision" and launched[0].use_llm_selector is True
+    assert c.post("/api/runs", json={"disaster": "storm"}).status_code == 200
+    assert launched[1].tools == "mock" and launched[1].use_llm_selector is False   # safe defaults
+    assert c.post("/api/runs", json={"disaster": "storm", "tools": "telepathy"}).status_code == 400

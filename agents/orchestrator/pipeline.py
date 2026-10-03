@@ -43,6 +43,7 @@ class RunConfig:
     max_rounds: int = 2
     per_tile_cap: int = 2
     disaster: str | None = None       # label only; lets the dashboard find images
+    tools: str = "mock"               # label only: 'mock' or 'vision' (shown on the dashboard)
     wave_size: int | None = None      # None: all tiles at once (one wave)
     wave_interval_s: float = 0.0      # pause between waves (simulated arrival)
 
@@ -74,6 +75,7 @@ def tile_summary(a: TileAssessment) -> dict:
                 "label": r.label,
                 "confidence": r.confidence,
                 "reasoning": r.selection_reasoning,
+                "evidence": r.evidence,
             }
             for r in a.tool_call_history
         ],
@@ -129,6 +131,7 @@ def run_pipeline(
         max_rounds=config.max_rounds,
         tile_ids=[s.tile_id for s in specs],
         disaster=config.disaster,
+        tools=config.tools,
         tiles=[{"tile_id": s.tile_id, "latitude": s.latitude, "longitude": s.longitude} for s in specs],
         wave_size=config.wave_size,
         wave_interval_s=config.wave_interval_s,

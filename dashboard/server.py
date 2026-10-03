@@ -20,9 +20,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from shared.truth import DAMAGE_SCORES, ground_truth  # noqa: F401  (ground_truth re-exported for tests)
+
 STATIC_DIR = Path(__file__).parent / "static"
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-DAMAGE_SCORES = {"no-damage": 0, "minor-damage": 1, "major-damage": 2, "destroyed": 3}
 
 
 class RunRequest(BaseModel):
@@ -31,6 +32,7 @@ class RunRequest(BaseModel):
     wave_size: int | None = Field(default=3, ge=1, le=50)
     wave_interval_s: float = Field(default=2.0, ge=0.0, le=30.0)
     use_llm_selector: bool = False
+    tools: str = "mock"
 
 
 def _safe(name: str) -> str:
@@ -74,24 +76,7 @@ def summarise_run(run_dir: Path) -> dict | None:
         "versions": finished["versions"] if finished else None,
         "transport": transport["transport"] if transport else None,
         "streaming": bool(started and started.get("wave_size")),
-    }
-
-
-def ground_truth(label_path: Path) -> dict:
-    """Per-building xBD damage counts for one tile, and a 0-3 tile summary."""
-    data = json.loads(label_path.read_text())
-    counts = {k: 0 for k in DAMAGE_SCORES}
-    for feature in data.get("features", {}).get("lng_lat", []):
-        subtype = feature.get("properties", {}).get("subtype")
-        if subtype in counts:
-            counts[subtype] += 1
-    total = sum(counts.values())
-    scores = [DAMAGE_SCORES[k] for k, n in counts.items() for _ in range(n)]
-    return {
-        "counts": counts,
-        "buildings": total,
-        "worst": max(scores) if scores else None,
-        "mean": round(sum(scores) / len(scores), 2) if scores else None,
+        "tools": started.get("tools", "mock") if started else None,
     }
 
 
@@ -117,7 +102,7 @@ def create_app(
             disaster=req.disaster, demo_root=demo_dir, run_id=run_id, events_dir=runs_dir,
             transport=req.transport, spawn_local=req.transport == "a2a",
             wave_size=req.wave_size, wave_interval_s=req.wave_interval_s,
-            use_llm_selector=req.use_llm_selector,
+            use_llm_selector=req.use_llm_selector, tools=req.tools,
             offline=os.environ.get("TRIAGE_STORE", "memory") != "firestore",
         )
         # validate synchronously so the UI gets a clear error instead of a silent failure
@@ -186,6 +171,8 @@ def create_app(
         _safe(req.disaster)
         if req.transport not in ("inprocess", "a2a"):
             raise HTTPException(status_code=400, detail="transport must be inprocess or a2a")
+        if req.tools not in ("mock", "vision"):
+            raise HTTPException(status_code=400, detail="tools must be mock or vision")
         if not run_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="a run is already starting")
         try:
@@ -222,6 +209,27 @@ def create_app(
             except ImportError:
                 pass  # no Pillow: serve the full-size image
         return FileResponse(path, media_type="image/png")
+
+    @app.get("/api/runs/{run_id}/evaluation")
+    def run_evaluation(run_id: str):
+        """Agreement of this run's readings with xBD ground truth (see agents.orchestrator.evaluation)."""
+        _safe(run_id)
+        events = read_events_after(runs_dir / run_id / "events.jsonl")
+        started = next((e for e in events if e["type"] == "run_started"), None)
+        if started is None or not started.get("disaster"):
+            raise HTTPException(status_code=404, detail="unknown run")
+        from agents.orchestrator.evaluation import evaluate_events
+
+        result = evaluate_events(events, demo_dir / started["disaster"] / "labels")
+        result["run"] = {"run_id": run_id, "disaster": started["disaster"], "tools": started.get("tools", "mock")}
+        return result
+
+    @app.get("/api/footprints/{disaster}")
+    def footprints(disaster: str):
+        """True ground footprint of each tile (see scripts.build_footprints); {} if not built."""
+        _safe(disaster)
+        path = demo_dir / disaster / "footprints.json"
+        return JSONResponse(json.loads(path.read_text()) if path.exists() else {})
 
     @app.get("/api/truth/{disaster}/{tile_id}")
     def truth(disaster: str, tile_id: str):

@@ -15,7 +15,7 @@ from agents.orchestrator.events import EventLog
 from agents.orchestrator.models import TileSpec, order_for_arrival
 from agents.orchestrator.pipeline import RunConfig, RunResult, new_run_id, run_pipeline
 from agents.orchestrator.ports import InProcessPerception, InProcessPlanner
-from shared.agent_factory import build_perception_agent, build_second_opinion_agent
+from shared.agent_factory import TOOLS_MODES, build_perception_agent, build_second_opinion_agent
 from shared.local_zone_store import LocalZoneRankingStore
 
 TILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -36,6 +36,7 @@ class RunOptions:
     wave_interval_s: float = 2.0
     arrival_order: str = "sweep"
     use_llm_selector: bool = False
+    tools: str = "mock"
     transport: str = "inprocess"
     agent1_url: str | None = None
     agent2_url: str | None = None
@@ -74,6 +75,8 @@ def execute_run(
     """Run the whole pipeline. Raises ValueError for bad input (missing tiles, bad transport)."""
     if opts.transport not in TRANSPORTS:
         raise ValueError(f"transport must be one of {TRANSPORTS}")
+    if opts.tools not in TOOLS_MODES:
+        raise ValueError(f"tools must be one of {TOOLS_MODES}")
     demo_dir = opts.demo_dir or opts.demo_root / opts.disaster
     if not (demo_dir / "images").is_dir():
         raise ValueError(
@@ -92,7 +95,7 @@ def execute_run(
     batch_id = opts.batch_id or new_batch_id(opts.disaster)
     config = RunConfig(
         batch_id=batch_id, run_id=run_id, adjacency_radius_m=radius, max_rounds=opts.rounds,
-        per_tile_cap=opts.per_tile_cap, disaster=opts.disaster,
+        per_tile_cap=opts.per_tile_cap, disaster=opts.disaster, tools=opts.tools,
         wave_size=opts.wave_size, wave_interval_s=opts.wave_interval_s,
     )
     if opts.wave_size:
@@ -110,8 +113,8 @@ def execute_run(
 
     events = EventLog(run_id, opts.events_dir / run_id / "events.jsonl", listener=listener)
     in_process_perception = InProcessPerception(
-        agent=build_perception_agent(opts.use_llm_selector),
-        reinspection_agent=build_second_opinion_agent(opts.use_llm_selector),
+        agent=build_perception_agent(opts.use_llm_selector, tools_mode=opts.tools),
+        reinspection_agent=build_second_opinion_agent(opts.use_llm_selector, tools_mode=opts.tools),
         max_workers=opts.concurrency,
     )
     in_process_planner = InProcessPlanner()

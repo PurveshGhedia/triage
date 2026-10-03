@@ -17,6 +17,8 @@
         <option value="a2a">Agents: A2A (Google ADK)</option>
       </select>
       <label class="chk" title="Feed tiles in waves, like a satellite pass"><input type="checkbox" id="streaming" checked> Simulated live feed</label>
+      <label class="chk" title="Gemini looks at the real before/after imagery. Unticked: random stand-in tools that ignore the image."><input type="checkbox" id="vision"> Real vision (Gemini)</label>
+      <label class="chk" title="Gemini decides which tool to try next, and explains why"><input type="checkbox" id="llmselect"> Gemini tool selection</label>
       <button id="runBtn" class="primary">▶ Run</button>
       <span class="sep"></span>
       <select id="runSelect" title="Past runs"></select>

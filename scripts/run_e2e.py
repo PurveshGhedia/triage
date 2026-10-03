@@ -11,6 +11,10 @@ images, geo.json and demo.json (which holds the recommended adjacency radius).
 Each run gets its own batch id (<disaster>-<timestamp>) unless you pass --batch-id,
 so repeated demo runs never mix versions. Events go to data/runs/<run_id>/events.jsonl.
 
+--tools vision swaps the mock tools for Gemini-vision tools that look at the real before/after
+imagery (cached on disk, so a repeat run is instant and identical). Without it the tools are
+random stand-ins that ignore the image: fine for testing the machinery, not for judging damage.
+
 --transport a2a runs Agent 1 and Agent 2 as real Google ADK A2A services and talks to them
 over HTTP (the orchestrator uses ADK's RemoteA2aAgent). With --spawn-local the two services
 are started on localhost for you; otherwise pass --agent1-url / --agent2-url. If an A2A call
@@ -36,6 +40,7 @@ from agents.orchestrator.runner import RunOptions, execute_run
 def print_event(event: dict) -> None:
     t = event["type"]
     if t == "run_started":
+        print(f"[run] tools: {event.get('tools', 'mock')}")
         print(f"[run] {event['tile_count']} tiles, batch {event['batch_id']}, "
               f"radius {event['adjacency_radius_m']:.0f} m")
     elif t == "tile_finished":
@@ -88,7 +93,10 @@ def main() -> None:
                         help="Feed tiles in waves of this size (simulated live arrival).")
     parser.add_argument("--wave-interval-s", type=float, default=2.0)
     parser.add_argument("--arrival-order", choices=ARRIVAL_ORDERS, default="sweep")
-    parser.add_argument("--use-llm-selector", action="store_true")
+    parser.add_argument("--use-llm-selector", action="store_true",
+                        help="Let Gemini choose which tool to try next (default: fixed order).")
+    parser.add_argument("--tools", choices=["mock", "vision"], default="mock",
+                        help="mock: random stand-in tools. vision: Gemini looks at the real imagery.")
     parser.add_argument("--transport", choices=["inprocess", "a2a"], default="inprocess")
     parser.add_argument("--agent1-url", default=None)
     parser.add_argument("--agent2-url", default=None)
@@ -104,7 +112,7 @@ def main() -> None:
         radius_m=args.radius_m, rounds=args.rounds, per_tile_cap=args.per_tile_cap,
         concurrency=args.concurrency, wave_size=args.wave_size,
         wave_interval_s=args.wave_interval_s, arrival_order=args.arrival_order,
-        use_llm_selector=args.use_llm_selector, transport=args.transport,
+        use_llm_selector=args.use_llm_selector, tools=args.tools, transport=args.transport,
         agent1_url=args.agent1_url, agent2_url=args.agent2_url,
         spawn_local=args.spawn_local, fallback=not args.no_fallback,
         offline=args.offline, events_dir=args.events_dir,

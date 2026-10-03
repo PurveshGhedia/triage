@@ -30,10 +30,10 @@ from agents.orchestrator.ports import InProcessPerception, InProcessPlanner
 from shared.agent_factory import build_perception_agent, build_second_opinion_agent
 
 
-def make_perception(use_llm: bool, concurrency: int) -> InProcessPerception:
+def make_perception(use_llm: bool, concurrency: int, tools: str = "mock") -> InProcessPerception:
     return InProcessPerception(
-        agent=build_perception_agent(use_llm),
-        reinspection_agent=build_second_opinion_agent(use_llm),
+        agent=build_perception_agent(use_llm, tools_mode=tools),
+        reinspection_agent=build_second_opinion_agent(use_llm, tools_mode=tools),
         max_workers=concurrency,
     )
 
@@ -46,6 +46,7 @@ def main() -> None:
     parser.add_argument("--public-url", default=None,
                         help="Address the agent card advertises (Cloud Run service URL).")
     parser.add_argument("--use-llm-selector", action="store_true")
+    parser.add_argument("--tools", choices=["mock", "vision"], default="mock")
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()
 
@@ -58,7 +59,7 @@ def main() -> None:
     if args.agent in ("perception", "both"):
         port = args.port
         protocol, host, adv_port = advertised(port)
-        app = build_perception_app(make_perception(args.use_llm_selector, args.concurrency),
+        app = build_perception_app(make_perception(args.use_llm_selector, args.concurrency, args.tools),
                                    host, adv_port, protocol)
         servers.append((app, port, "perception"))
     if args.agent in ("planner", "both"):

@@ -39,6 +39,8 @@
   let pollTimer = null, replayTimer = null, allowRun = true;
   let map = null, tileLayer = null, zoneLayer = null, fitted = false;
   let tileRects = {}, arrivedBefore = new Set(), selectedZone = null, lastDetailSig = "";
+  let tileImages = {}, imageryMode = "post", imageryChosen = false, footprintsFor = null, footprints = {}, footprintsReady = false;
+  const footprintCache = {};
   const truthCache = {};
   const TILE_HALF_M = 230;
 
@@ -53,13 +55,59 @@
     map = L.map("map", { zoomControl: true }).setView([20, 0], 2);
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       { maxZoom: 19, attribution: "Imagery © Esri" }).addTo(map);
+    map.createPane("imagery");
+    map.getPane("imagery").style.zIndex = 350;      // above the basemap, below tile outlines and zones
+    map.getPane("imagery").classList.add("leaflet-imagery-pane");
     tileLayer = L.layerGroup().addTo(map);
     zoneLayer = L.layerGroup().addTo(map);
   }
 
-  function tileBounds(t) {
-    const c = S.tileCorners(t.latitude, t.longitude, TILE_HALF_M);
-    return [[c[2][0], c[3][1]], [c[0][0], c[1][1]]];
+  function geometry(t) {
+    return S.tileGeometry(t, footprints[t.tile_id], TILE_HALF_M);
+  }
+
+  function imageUrl(t, kind) {
+    const disaster = lastState.run && lastState.run.disaster;
+    return "/api/image/" + encodeURIComponent(disaster) + "/" + kind + "/" + encodeURIComponent(t.tile_id) + "?w=640";
+  }
+
+  function haveFootprints() { return Object.keys(footprints).length > 0; }
+
+  /* Draw the real xBD imagery for tiles that have arrived, at their true ground position. */
+  function syncImagery(t, geo, queued) {
+    const want = imageryMode !== "basemap" && geo.exact && !queued && lastState.run && lastState.run.disaster;
+    let ov = tileImages[t.tile_id];
+    if (!want) {
+      if (ov) { map.removeLayer(ov); delete tileImages[t.tile_id]; }
+      return;
+    }
+    const url = imageUrl(t, imageryMode);
+    if (!ov) {
+      ov = L.imageOverlay(url, geo.bounds, { pane: "imagery", opacity: 0, interactive: false });
+      ov.addTo(map);
+      tileImages[t.tile_id] = ov;
+      ov._triageMode = imageryMode;
+      setTimeout(() => { if (ov.setOpacity) ov.setOpacity(1); }, 30);   // fade the tile in as it "arrives"
+    } else if (ov._triageMode !== imageryMode) {
+      ov.setUrl(url);
+      ov._triageMode = imageryMode;
+    }
+  }
+
+  async function ensureFootprints(disaster) {
+    if (!disaster || footprintsFor === disaster) return;
+    footprintsFor = disaster;
+    footprintsReady = false;
+    if (!(disaster in footprintCache)) {
+      try { footprintCache[disaster] = await api("/api/footprints/" + encodeURIComponent(disaster)); }
+      catch (e) { footprintCache[disaster] = {}; }
+    }
+    footprints = footprintCache[disaster];
+    if (!haveFootprints()) imageryMode = "basemap";
+    else if (imageryMode === "basemap" && !imageryChosen) imageryMode = "post";
+    footprintsReady = true;     // only now is the map framed, so it fits once, to the true footprints
+    fitted = false;
+    render();
   }
 
   function currentZones(state) {
@@ -78,11 +126,14 @@
     const nowArrived = new Set();
 
     located.forEach((t) => {
-      const bounds = tileBounds(t);
+      const geo = geometry(t);
+      const bounds = geo.bounds;
       const queued = t.status === "queued";
+      const showingImagery = imageryMode !== "basemap" && geo.exact;
       const style = {
-        color: S.tileColor(t), weight: 1.5, fillColor: S.tileColor(t),
-        fillOpacity: queued ? 0.06 : 0.5, dashArray: queued || t.status === "escalated" ? "4 3" : null,
+        color: S.tileColor(t), weight: showingImagery ? 3 : 1.5, fillColor: S.tileColor(t),
+        fillOpacity: queued ? 0.06 : (showingImagery ? 0.14 : 0.5),
+        dashArray: queued || t.status === "escalated" ? "4 3" : null,
       };
       let rect = tileRects[t.tile_id];
       if (!rect) {
@@ -91,7 +142,9 @@
         tileRects[t.tile_id] = rect;
       } else {
         rect.setStyle(style);
+        if (rect.setBounds) rect.setBounds(bounds);
       }
+      syncImagery(t, geo, queued);
       const tip = S.shortId(t.tile_id) + " · " + (queued ? "waiting" : (t.damage_severity || t.status));
       rect.bindTooltip(tip, { sticky: true });
       if (!queued) nowArrived.add(t.tile_id);
@@ -106,9 +159,9 @@
     });
     arrivedBefore = nowArrived;
 
-    if (!fitted && located.length) {
+    if (!fitted && located.length && (footprintsReady || !(state.run && state.run.disaster))) {
       const pts = [];
-      located.forEach((t) => S.tileCorners(t.latitude, t.longitude, TILE_HALF_M).forEach((c) => pts.push(c)));
+      located.forEach((t) => geometry(t).corners.forEach((c) => pts.push(c)));
       map.fitBounds(L.latLngBounds(pts), { padding: [50, 50] });
       fitted = true;
     }
@@ -119,7 +172,7 @@
       z.tile_ids.forEach((id) => {
         const t = state.tiles[id];
         if (t && t.latitude !== null && t.latitude !== undefined)
-          S.tileCorners(t.latitude, t.longitude, TILE_HALF_M + 20).forEach((c) => pts.push(c));
+          geometry(t).corners.forEach((c) => pts.push(c));
       });
       if (!pts.length) return;
       const color = S.priorityColor(z.priority_score);
@@ -214,9 +267,19 @@
     const chips = [];
     if (state.run) {
       chips.push(h("div", { class: "chip" }, h("b", {}, state.run.disaster || state.run.batch_id), state.run.streaming ? "simulated live feed" : "batch"));
+      const real = state.run.tools === "vision";
+      chips.push(h("div", { class: "chip", style: real ? { borderColor: "#38bdf8", color: "#7dd3fc" } : { borderColor: "#f59e0b", color: "#fbbf24" },
+        title: real ? "Gemini looked at the real before/after imagery" : "Labels come from random stand-in tools that ignore the image" },
+        real ? "Gemini vision" : "⚠ mock perception (random labels)"));
       if (state.wave) chips.push(h("div", { class: "chip" }, "wave ", h("b", {}, state.wave.current + "/" + state.wave.total)));
       if (state.reinspection) chips.push(h("div", { class: "chip", style: { borderColor: "#fcd34d", color: "#fcd34d" } },
         "⟳ second opinion · round " + state.reinspection.round));
+    }
+    if (haveFootprints()) {
+      const mk = (mode, label) => h("button", { class: imageryMode === mode ? "on" : "", onclick: () => {
+        imageryMode = mode; imageryChosen = true; render(); } }, label);
+      chips.push(h("div", { class: "seg", title: "What to show under the tile outlines" },
+        mk("post", "After"), mk("pre", "Before"), mk("basemap", "Basemap")));
     }
     hud.replaceChildren(...chips);
     const legend = $("legend");
@@ -300,6 +363,7 @@
     if (t.failure_reason) parts.push(h("div", { class: "tag conflict" }, t.failure_reason));
     const steps = (t.tool_calls || []).map((c) => h("div", { class: "step" },
       h("b", {}, c.tool), " → " + c.label + " (" + c.confidence + ")",
+      c.evidence ? h("div", { class: "seen" }, "sees: " + c.evidence) : null,
       c.reasoning ? h("div", { class: "why" }, "“" + c.reasoning + "”") : null));
     (t.reinspections || []).forEach((r) => {
       const was = r.before && r.before.damage_severity ? r.before.damage_severity : "no reading";
@@ -331,6 +395,7 @@
 
   function render() {
     lastState = S.reduce(events.slice(0, shown));
+    if (lastState.run && lastState.run.disaster) ensureFootprints(lastState.run.disaster);
     renderStatus(lastState);
     renderHud(lastState);
     renderMap(lastState);
@@ -348,7 +413,8 @@
   function resetView() {
     events = []; shown = 0; following = true; fitted = false; selectedZone = null; lastDetailSig = "";
     if (tileLayer) { tileLayer.clearLayers(); zoneLayer.clearLayers(); }
-    tileRects = {}; arrivedBefore = new Set();
+    if (map) Object.values(tileImages).forEach((ov) => map.removeLayer(ov));
+    tileImages = {}; tileRects = {}; arrivedBefore = new Set();
   }
 
   async function poll() {
@@ -404,6 +470,7 @@
       const body = {
         disaster: $("disaster").value, transport: $("transport").value,
         wave_size: $("streaming").checked ? 3 : null, wave_interval_s: 2.0,
+        tools: $("vision").checked ? "vision" : "mock", use_llm_selector: $("llmselect").checked,
       };
       const res = await api("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       await loadRuns();
