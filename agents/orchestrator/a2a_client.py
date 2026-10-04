@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 warnings.filterwarnings("ignore", message=r"\[EXPERIMENTAL\]")
 
+import httpx  # noqa: E402
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent  # noqa: E402
 from google.adk.runners import Runner  # noqa: E402
 from google.adk.sessions import InMemorySessionService  # noqa: E402
@@ -37,19 +38,23 @@ def card_url(base_url: str) -> str:
 class RemoteAgentCaller:
     """Send one JSON request to a remote A2A agent and return its JSON reply."""
 
-    def __init__(self, base_url: str, agent_name: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
+    def __init__(self, base_url: str, agent_name: str, timeout_s: float = DEFAULT_TIMEOUT_S,
+                 auth: httpx.Auth | None = None) -> None:
         self.base_url = base_url
         self.agent_name = agent_name
         self.timeout_s = timeout_s
+        self.auth = auth  # e.g. IdTokenAuth for private Cloud Run services
 
     def call(self, payload: dict) -> dict:
         return asyncio.run(self._call(payload))
 
     async def _call(self, payload: dict) -> dict:
+        client = httpx.AsyncClient(auth=self.auth, timeout=self.timeout_s) if self.auth else None
         remote = RemoteA2aAgent(
             name=self.agent_name,
             agent_card=card_url(self.base_url),
             description=f"remote {self.agent_name}",
+            httpx_client=client,
         )
         runner = Runner(agent=remote, app_name=APP_NAME, session_service=InMemorySessionService())
         session_id = uuid.uuid4().hex
@@ -69,7 +74,11 @@ class RemoteAgentCaller:
                 if event.content and event.content.parts:
                     texts.extend(p.text for p in event.content.parts if p.text)
 
-        await asyncio.wait_for(consume(), timeout=self.timeout_s)
+        try:
+            await asyncio.wait_for(consume(), timeout=self.timeout_s)
+        finally:
+            if client is not None:
+                await client.aclose()
 
         if not texts:
             # ADK reports connection / agent-card failures as an error event with no text.
@@ -83,8 +92,10 @@ class RemoteAgentCaller:
 
 
 class A2APerception:
-    def __init__(self, base_url: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
-        self._caller = RemoteAgentCaller(base_url, PERCEPTION_AGENT_NAME, timeout_s)
+    def __init__(self, base_url: str, timeout_s: float = DEFAULT_TIMEOUT_S,
+                 auth: httpx.Auth | None = None, options: dict | None = None) -> None:
+        self._caller = RemoteAgentCaller(base_url, PERCEPTION_AGENT_NAME, timeout_s, auth)
+        self._options = options  # how this run wants the remote Agent 1 built (tools, selector, variant)
 
     def assess(
         self,
@@ -98,6 +109,7 @@ class A2APerception:
                 "batch_id": batch_id,
                 "specs": [s.model_dump() for s in specs],
                 "reinspection": reinspection,
+                **({"options": self._options} if self._options else {}),
             }
         )
         results = [TileAssessment.model_validate(a) for a in data["assessments"]]
@@ -108,8 +120,9 @@ class A2APerception:
 
 
 class A2APlanner:
-    def __init__(self, base_url: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
-        self._caller = RemoteAgentCaller(base_url, PLANNER_AGENT_NAME, timeout_s)
+    def __init__(self, base_url: str, timeout_s: float = DEFAULT_TIMEOUT_S,
+                 auth: httpx.Auth | None = None) -> None:
+        self._caller = RemoteAgentCaller(base_url, PLANNER_AGENT_NAME, timeout_s, auth)
 
     def plan(
         self,

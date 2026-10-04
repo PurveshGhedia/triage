@@ -27,15 +27,14 @@ from agents.orchestrator.a2a_services import (
     split_public_url,
 )
 from agents.orchestrator.ports import InProcessPerception, InProcessPlanner
-from shared.agent_factory import build_perception_agent, build_second_opinion_agent
+from shared.agent_factory import build_in_process_perception
 
 
-def make_perception(use_llm: bool, concurrency: int, tools: str = "mock") -> InProcessPerception:
-    return InProcessPerception(
-        agent=build_perception_agent(use_llm, tools_mode=tools),
-        reinspection_agent=build_second_opinion_agent(use_llm, tools_mode=tools),
-        max_workers=concurrency,
-    )
+def make_perception_factory(concurrency: int):
+    """Builds Agent 1 for the options a request carries (tools, selector, prompt variant)."""
+    def factory(tools: str = "mock", use_llm_selector: bool = False, vision_variant: str | None = None):
+        return build_in_process_perception(tools, use_llm_selector, vision_variant, concurrency)
+    return factory
 
 
 def main() -> None:
@@ -43,10 +42,8 @@ def main() -> None:
     parser.add_argument("--agent", choices=["perception", "planner", "both"], required=True)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8101)))
-    parser.add_argument("--public-url", default=None,
+    parser.add_argument("--public-url", default=os.environ.get("TRIAGE_PUBLIC_URL"),
                         help="Address the agent card advertises (Cloud Run service URL).")
-    parser.add_argument("--use-llm-selector", action="store_true")
-    parser.add_argument("--tools", choices=["mock", "vision"], default="mock")
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()
 
@@ -59,8 +56,8 @@ def main() -> None:
     if args.agent in ("perception", "both"):
         port = args.port
         protocol, host, adv_port = advertised(port)
-        app = build_perception_app(make_perception(args.use_llm_selector, args.concurrency, args.tools),
-                                   host, adv_port, protocol)
+        app = build_perception_app(None, host, adv_port, protocol,
+                                   perception_factory=make_perception_factory(args.concurrency))
         servers.append((app, port, "perception"))
     if args.agent in ("planner", "both"):
         port = args.port + 1 if args.agent == "both" else args.port

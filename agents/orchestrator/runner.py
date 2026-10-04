@@ -15,7 +15,7 @@ from agents.orchestrator.events import EventLog
 from agents.orchestrator.models import TileSpec, order_for_arrival
 from agents.orchestrator.pipeline import RunConfig, RunResult, new_run_id, run_pipeline
 from agents.orchestrator.ports import InProcessPerception, InProcessPlanner
-from shared.agent_factory import TOOLS_MODES, build_perception_agent, build_second_opinion_agent
+from shared.agent_factory import TOOLS_MODES, build_in_process_perception
 from shared.local_zone_store import LocalZoneRankingStore
 
 TILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -37,15 +37,29 @@ class RunOptions:
     arrival_order: str = "sweep"
     use_llm_selector: bool = False
     tools: str = "mock"
+    vision_variant: str | None = None
     transport: str = "inprocess"
     agent1_url: str | None = None
     agent2_url: str | None = None
     spawn_local: bool = False
+    a2a_auth: bool = False          # attach Google ID tokens when calling private (Cloud Run) agents
     fallback: bool = True
     offline: bool = False
     events_dir: Path = Path("data/runs")
     ledger_path: Path | None = None
     run_id: str | None = None
+
+
+class _LazyPerception:
+    """Builds the in-process Agent 1 only when it is first needed (a fallback that may never run)."""
+
+    def __init__(self, build) -> None:
+        self._build, self._agent = build, None
+
+    def assess(self, *args, **kwargs):
+        if self._agent is None:
+            self._agent = self._build()
+        return self._agent.assess(*args, **kwargs)
 
 
 def load_specs(demo_dir: Path) -> list[TileSpec]:
@@ -89,6 +103,11 @@ def execute_run(
 
     meta_path = demo_dir / "demo.json"
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    expected = meta.get("tile_count")
+    mismatch = None
+    if expected is not None and expected != len(specs):
+        mismatch = (f"{demo_dir} holds {len(specs)} tiles but demo.json says {expected}: stale files from an "
+                    f"earlier selection? Re-run: python -m scripts.select_demo_tiles --disaster {opts.disaster}")
     radius = opts.radius_m or meta.get("adjacency_radius_m") or 500.0
 
     run_id = opts.run_id or new_run_id()
@@ -112,12 +131,17 @@ def execute_run(
             store = TileAssessmentStore(batch_id=batch_id)
 
     events = EventLog(run_id, opts.events_dir / run_id / "events.jsonl", listener=listener)
-    in_process_perception = InProcessPerception(
-        agent=build_perception_agent(opts.use_llm_selector, tools_mode=opts.tools),
-        reinspection_agent=build_second_opinion_agent(opts.use_llm_selector, tools_mode=opts.tools),
-        max_workers=opts.concurrency,
-    )
+    if mismatch:
+        events.emit("warning", message=mismatch)
+    def build_local():
+        return build_in_process_perception(
+            opts.tools, opts.use_llm_selector, opts.vision_variant, opts.concurrency)
+
     in_process_planner = InProcessPlanner()
+    remote_agents = opts.transport == "a2a" and not opts.spawn_local
+    # With remote agents the local Agent 1 is only a fallback: don't construct it (or any Gemini
+    # client it needs) unless a remote call actually fails.
+    in_process_perception = _LazyPerception(build_local) if remote_agents else build_local()
     perception, planner = in_process_perception, in_process_planner
     services = None
 
@@ -143,7 +167,17 @@ def execute_run(
             events.emit("transport_fallback", agent=agent,
                         error=f"{type(exc).__name__}: {str(exc)[:160]}")
 
-        perception, planner = A2APerception(agent1_url), A2APlanner(agent2_url)
+        auth1 = auth2 = None
+        if opts.a2a_auth and not opts.spawn_local:
+            from agents.orchestrator.a2a_auth import IdTokenAuth
+
+            auth1, auth2 = IdTokenAuth(agent1_url), IdTokenAuth(agent2_url)
+        # The remote Agent 1 is built per request from these options, so the dashboard's choices
+        # (real vision, Gemini selection, prompt variant) apply there too.
+        remote_options = {"tools": opts.tools, "use_llm_selector": opts.use_llm_selector,
+                          "vision_variant": opts.vision_variant}
+        perception = A2APerception(agent1_url, auth=auth1, options=remote_options)
+        planner = A2APlanner(agent2_url, auth=auth2)
         if opts.fallback:
             perception = ResilientPerception(perception, in_process_perception, on_fallback)
             planner = ResilientPlanner(planner, in_process_planner, on_fallback)

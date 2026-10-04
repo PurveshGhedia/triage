@@ -33,6 +33,7 @@ class RunRequest(BaseModel):
     wave_interval_s: float = Field(default=2.0, ge=0.0, le=30.0)
     use_llm_selector: bool = False
     tools: str = "mock"
+    vision_variant: str | None = None
 
 
 def _safe(name: str) -> str:
@@ -98,9 +99,16 @@ def create_app(
         from agents.orchestrator.runner import RunOptions, execute_run
 
         run_id = new_run_id()
+        # When TRIAGE_AGENT1_URL / TRIAGE_AGENT2_URL are set (Cloud Run), A2A runs call those
+        # separate services; otherwise the agents are started on localhost for the run.
+        agent1, agent2 = os.environ.get("TRIAGE_AGENT1_URL"), os.environ.get("TRIAGE_AGENT2_URL")
+        remote_agents = bool(agent1 and agent2)
         opts = RunOptions(
             disaster=req.disaster, demo_root=demo_dir, run_id=run_id, events_dir=runs_dir,
-            transport=req.transport, spawn_local=req.transport == "a2a",
+            transport=req.transport, spawn_local=req.transport == "a2a" and not remote_agents,
+            agent1_url=agent1, agent2_url=agent2,
+            a2a_auth=os.environ.get("TRIAGE_A2A_AUTH") == "id_token",
+            vision_variant=req.vision_variant or os.environ.get("TRIAGE_VISION_VARIANT") or None,
             wave_size=req.wave_size, wave_interval_s=req.wave_interval_s,
             use_llm_selector=req.use_llm_selector, tools=req.tools,
             offline=os.environ.get("TRIAGE_STORE", "memory") != "firestore",
@@ -127,7 +135,8 @@ def create_app(
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "allow_run": allow_run}
+        remote = bool(os.environ.get("TRIAGE_AGENT1_URL") and os.environ.get("TRIAGE_AGENT2_URL"))
+        return {"ok": True, "allow_run": allow_run, "agents": "remote" if remote else "local"}
 
     @app.get("/api/disasters")
     def disasters():

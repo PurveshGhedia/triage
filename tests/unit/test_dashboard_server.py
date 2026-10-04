@@ -53,7 +53,7 @@ def client(world):
 
 
 def test_health_and_static_index(client):
-    assert client.get("/api/health").json() == {"ok": True, "allow_run": True}
+    assert client.get("/api/health").json() == {"ok": True, "allow_run": True, "agents": "local"}
     page = client.get("/")
     assert page.status_code == 200 and "TRIAGE" in page.text
     assert client.get("/static/state.js").status_code == 200

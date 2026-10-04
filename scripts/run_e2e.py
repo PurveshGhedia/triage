@@ -71,6 +71,8 @@ def print_event(event: dict) -> None:
     elif t == "transport_fallback":
         print(f"[transport] !! A2A call to the {event['agent']} agent failed "
               f"({event['error']}); using the in-process agent instead")
+    elif t == "warning":
+        print(f"[warning] {event['message']}")
     elif t == "reinspection_no_change":
         print(f"[loop] round {event['round']}: second opinion changed nothing; stopping")
     elif t == "reinspection_exhausted":
@@ -110,16 +112,13 @@ def main() -> None:
     parser.add_argument("--events-dir", type=Path, default=Path("data/runs"))
     args = parser.parse_args()
 
-    if args.vision_variant:
-        import os
-
-        os.environ["TRIAGE_VISION_VARIANT"] = args.vision_variant
     opts = RunOptions(
         disaster=args.disaster, demo_dir=args.demo_dir, batch_id=args.batch_id,
         radius_m=args.radius_m, rounds=args.rounds, per_tile_cap=args.per_tile_cap,
         concurrency=args.concurrency, wave_size=args.wave_size,
         wave_interval_s=args.wave_interval_s, arrival_order=args.arrival_order,
-        use_llm_selector=args.use_llm_selector, tools=args.tools, transport=args.transport,
+        use_llm_selector=args.use_llm_selector, tools=args.tools, vision_variant=args.vision_variant,
+        transport=args.transport,
         agent1_url=args.agent1_url, agent2_url=args.agent2_url,
         spawn_local=args.spawn_local, fallback=not args.no_fallback,
         offline=args.offline, events_dir=args.events_dir,

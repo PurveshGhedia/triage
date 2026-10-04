@@ -52,16 +52,24 @@ def _reply(author: str, payload: dict) -> Event:
 
 
 class PerceptionServiceAgent(BaseAgent):
-    """Agent 1 over A2A: request {batch_id, specs[], reinspection} -> {assessments[]}."""
+    """Agent 1 over A2A: request {batch_id, specs[], reinspection, options?} -> {assessments[]}.
+
+    `options` ({tools, use_llm_selector, vision_variant}) says how THIS run wants Agent 1 built.
+    If a `perception_factory` is configured the service builds (and caches) an agent for those
+    options; otherwise it uses its fixed `perception`. Without this, a dashboard checkbox such as
+    "Real vision" would silently do nothing when the agents run as separate services."""
 
     perception: Any = None
+    perception_factory: Any = None
+    _agents: Any = None
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         try:
             request = json.loads(_request_text(ctx))
             specs = [TileSpec.model_validate(s) for s in request["specs"]]
+            perception = self._perception_for(request.get("options"))
             results = await asyncio.to_thread(
-                self.perception.assess,
+                perception.assess,
                 request["batch_id"],
                 specs,
                 bool(request.get("reinspection", False)),
@@ -70,6 +78,26 @@ class PerceptionServiceAgent(BaseAgent):
         except Exception as exc:  # return the failure to the caller instead of crashing the task
             payload = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
         yield _reply(self.name, payload)
+
+
+def _options_key(options: dict | None) -> tuple:
+    o = options or {}
+    return (o.get("tools", "mock"), bool(o.get("use_llm_selector", False)), o.get("vision_variant"))
+
+
+def _perception_for(self, options: dict | None):
+    if self.perception_factory is None:
+        return self.perception
+    if self._agents is None:
+        self._agents = {}
+    key = _options_key(options)
+    if key not in self._agents:
+        self._agents[key] = self.perception_factory(
+            tools=key[0], use_llm_selector=key[1], vision_variant=key[2])
+    return self._agents[key]
+
+
+PerceptionServiceAgent._perception_for = _perception_for
 
 
 class PlannerServiceAgent(BaseAgent):
@@ -107,7 +135,8 @@ def split_public_url(url: str) -> tuple[str, str, int]:
 
 
 def build_perception_app(
-    perception: InProcessPerception, host: str, port: int, protocol: str = "http"
+    perception: InProcessPerception | None, host: str, port: int, protocol: str = "http",
+    perception_factory=None,
 ):
     agent = PerceptionServiceAgent(
         name=PERCEPTION_AGENT_NAME,
@@ -117,6 +146,7 @@ def build_perception_app(
             "tiles it cannot assess."
         ),
         perception=perception,
+        perception_factory=perception_factory,
     )
     return to_a2a(agent, host=host, port=port, protocol=protocol)
 
