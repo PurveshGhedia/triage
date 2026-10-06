@@ -12,7 +12,7 @@
 #   DRY_RUN=1 bash deploy/deploy.sh          # print the commands, change nothing
 #   STEP=build bash deploy/deploy.sh         # one step only (see STEPS below)
 #
-# Settings (environment): PROJECT REGION REPO VISION_VARIANT TRIAGE_STORE ALLOW_RUN
+# Settings (environment): PROJECT REGION REPO VISION_VARIANT VISION_CACHE (baked|live) TRIAGE_STORE ALLOW_RUN
 STEPS="apis repo accounts iam stage build agents dashboard bindings"
 set -eu
 
@@ -20,6 +20,9 @@ PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-central1}"
 REPO="${REPO:-triage}"
 VISION_VARIANT="${VISION_VARIANT:-classes}"
+# baked: serve the Gemini answers cached at build time (fast, repeatable, works if Vertex is down)
+# live:  empty cache, so every vision call on the deployed services is a real Gemini call
+VISION_CACHE="${VISION_CACHE:-baked}"
 TRIAGE_STORE="${TRIAGE_STORE:-firestore}"
 ALLOW_RUN="${ALLOW_RUN:-1}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -43,7 +46,12 @@ SA2="triage-agent2@$PROJECT.iam.gserviceaccount.com"
 SAD="triage-dashboard@$PROJECT.iam.gserviceaccount.com"
 URL1="https://triage-agent1-$NUMBER.$REGION.run.app"     # Cloud Run's URLs are predictable, so the agent
 URL2="https://triage-agent2-$NUMBER.$REGION.run.app"     # card can advertise its own address from the start
-COMMON_ENV="GCP_PROJECT_ID=$PROJECT,VERTEX_AI_LOCATION=$REGION,USE_MOCK_TOOLS=true,TRIAGE_VISION_CACHE=/app/data/cache/vision"
+case "$VISION_CACHE" in
+  baked) CACHE_DIR="/app/data/cache/vision" ;;
+  live)  CACHE_DIR="/tmp/vision-cache-live" ;;
+  *) echo "VISION_CACHE must be 'baked' or 'live'"; exit 1 ;;
+esac
+COMMON_ENV="GCP_PROJECT_ID=$PROJECT,VERTEX_AI_LOCATION=$REGION,USE_MOCK_TOOLS=true,TRIAGE_VISION_CACHE=$CACHE_DIR"
 
 echo "TRIAGE deploy  project=$PROJECT ($NUMBER)  region=$REGION  dry-run=$DRY_RUN${ONLY:+  only=$ONLY}"
 

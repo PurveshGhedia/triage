@@ -261,3 +261,32 @@ def test_missing_project_stops_immediately(tmp_path):
     r, log = run_deploy(tmp_path, PROJECT="", FAKE_PROJECT="")
     assert r.returncode == 1 and "No project" in r.stdout
     assert not [l for l in log if "run deploy" in l]
+
+
+@needs_bash
+def test_vision_cache_defaults_to_the_baked_answers(tmp_path):
+    _, log = run_deploy(tmp_path)
+    for svc in ("triage-agent1", "triage-agent2", "triage-dashboard"):
+        line = next(l for l in log if f"run deploy {svc}" in l)
+        assert "TRIAGE_VISION_CACHE=/app/data/cache/vision" in line
+
+
+@needs_bash
+def test_live_mode_points_every_service_at_an_empty_cache_so_calls_are_real(tmp_path):
+    _, log = run_deploy(tmp_path, VISION_CACHE="live")
+    for svc in ("triage-agent1", "triage-agent2", "triage-dashboard"):
+        line = next(l for l in log if f"run deploy {svc}" in l)
+        assert "TRIAGE_VISION_CACHE=/tmp/vision-cache-live" in line and "/app/data/cache/vision" not in line
+
+
+@needs_bash
+def test_an_invalid_cache_mode_is_rejected_before_anything_runs(tmp_path):
+    r, log = run_deploy(tmp_path, VISION_CACHE="sometimes")
+    assert r.returncode == 1 and "must be 'baked' or 'live'" in r.stdout
+    assert not [l for l in log if "run deploy" in l]
+
+
+@needs_bash
+def test_the_chosen_vision_variant_reaches_the_dashboard(tmp_path):
+    _, log = run_deploy(tmp_path, VISION_VARIANT="fractions")
+    assert "TRIAGE_VISION_VARIANT=fractions" in next(l for l in log if "run deploy triage-dashboard" in l)

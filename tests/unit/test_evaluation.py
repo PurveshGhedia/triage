@@ -180,11 +180,15 @@ def test_vision_run_records_tools_evidence_and_reads_through_the_cache(demo, tmp
 def test_a_second_vision_run_makes_no_model_calls(demo, tmp_path, monkeypatch):
     import tools.vision.client as vc
 
+    import threading
+
     calls = {"n": 0}
+    lock = threading.Lock()
 
     def make(project=None, location=None, model=None):
         def generate(images, prompt, schema):
-            calls["n"] += 1
+            with lock:
+                calls["n"] += 1
             if "ROAD ACCESS" in prompt:
                 return json.dumps({"label": "access-clear", "confidence": 0.8, "evidence": "x"})
             return json.dumps({"label": "minor-damage", "confidence": 0.8, "evidence": "x"})
