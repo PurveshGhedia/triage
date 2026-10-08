@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TRIAGE · Disaster triage console</title>
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand"><b>TRIAGE</b><span>Tile-level Reasoning for Impact Assessment &amp; Grouped Evaluation</span></div>
+    <div class="controls">
+      <select id="disaster" title="Disaster scenario"></select>
+      <select id="transport" title="How the two agents talk">
+        <option value="inprocess">Agents: in-process</option>
+        <option value="a2a">Agents: A2A (Google ADK)</option>
+      </select>
+      <label class="chk" title="Feed tiles in waves, like a satellite pass"><input type="checkbox" id="streaming" checked> Simulated live feed</label>
+      <label class="chk" title="Gemini looks at the real before/after imagery. Unticked: random stand-in tools that ignore the image."><input type="checkbox" id="vision"> Real vision (Gemini)</label>
+      <label class="chk" title="Gemini decides which tool to try next, and explains why"><input type="checkbox" id="llmselect"> Gemini tool selection</label>
+      <button id="runBtn" class="primary">▶ Run</button>
+      <span class="sep"></span>
+      <select id="runSelect" title="Past runs"></select>
+      <select id="speed" title="Replay speed">
+        <option value="1">1×</option><option value="2" selected>2×</option>
+        <option value="5">5×</option><option value="10">10×</option>
+      </select>
+      <button id="replayBtn">⟲ Replay</button>
+    </div>
+    <div id="status"></div>
+  </header>
+
+  <main>
+    <section id="mapwrap">
+      <div id="map"></div>
+      <div id="hud"></div>
+      <div id="legend"></div>
+      <div id="banner" hidden></div>
+    </section>
+
+    <aside id="side">
+      <div id="versionBar">
+        <div class="vlabel"><span id="versionTitle">Ranking</span><button id="latestBtn" hidden>Latest ▸▸</button></div>
+        <input type="range" id="versionSlider" min="1" max="1" value="1" disabled>
+        <div id="versionHint"></div>
+      </div>
+      <div id="stats"></div>
+      <div id="ranking"></div>
+    </aside>
+
+    <section id="detail" hidden>
+      <div class="detail-head"><h2 id="detailTitle"></h2>
+        <label class="chk"><input type="checkbox" id="truthToggle"> Show xBD ground truth</label>
+        <button id="detailClose" aria-label="Close">✕</button></div>
+      <div id="detailBody"></div>
+    </section>
+
+    <footer id="feed"></footer>
+  </main>
+
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/state.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

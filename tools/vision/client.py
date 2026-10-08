@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -44,7 +45,9 @@ DEFAULT_CACHE_DIR = Path("data/cache/vision")
 MAX_SIDE_PX = 768
 
 Image = tuple[bytes, str]  # (bytes, mime type)
-GenerateFn = Callable[[list[Image], str, type[BaseModel]], str]
+# A generate function returns the model's text, or (text, usage) where usage is
+# {"prompt_tokens": int, "output_tokens": int} (what the call was billed for).
+GenerateFn = Callable[[list[Image], str, type[BaseModel]], "str | tuple[str, dict]"]
 
 
 class DamageReading(BaseModel):
@@ -185,7 +188,7 @@ def make_vertex_generate_fn(
     model = model or os.environ.get("VISION_MODEL", DEFAULT_MODEL)
     client = genai.Client(vertexai=True, project=project, location=location)
 
-    def generate(images: list[Image], prompt: str, schema: type[BaseModel]) -> str:
+    def generate(images: list[Image], prompt: str, schema: type[BaseModel]) -> tuple[str, dict]:
         parts = [types.Part.from_bytes(data=b, mime_type=m) for b, m in images] + [prompt]
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -195,7 +198,14 @@ def make_vertex_generate_fn(
             thinking_config=types.ThinkingConfig(thinking_budget=0),  # fast, and no tokens lost to thinking
         )
         response = client.models.generate_content(model=model, contents=parts, config=config)
-        return response.text or ""
+        meta = getattr(response, "usage_metadata", None)
+        usage = {
+            "prompt_tokens": int(getattr(meta, "prompt_token_count", 0) or 0),
+            # thinking tokens (if any) are billed as output tokens
+            "output_tokens": int(getattr(meta, "candidates_token_count", 0) or 0)
+                             + int(getattr(meta, "thoughts_token_count", 0) or 0),
+        }
+        return response.text or "", usage
 
     return generate
 
@@ -220,10 +230,15 @@ class _VisionTool(ToolClient):
         self.cache_dir = Path(cache_dir or os.environ.get("TRIAGE_VISION_CACHE", DEFAULT_CACHE_DIR))
         self.use_pre = use_pre
 
-    def _generate(self, images: list[Image]) -> str:
+    def _generate(self, images: list[Image]) -> tuple[str, dict | None, float]:
+        """(text, usage or None, seconds the model call took)."""
         if self._generate_fn is None:  # built lazily so importing this module needs no GCP setup
             self._generate_fn = make_vertex_generate_fn(model=self.model)
-        return self._generate_fn(images, self.prompt, self.schema)
+        started = time.perf_counter()
+        out = self._generate_fn(images, self.prompt, self.schema)
+        seconds = round(time.perf_counter() - started, 3)
+        text, usage = out if isinstance(out, tuple) else (out, None)
+        return text, usage, seconds
 
     def _cache_key(self, images: list[Image]) -> str:
         h = hashlib.sha256()
@@ -263,7 +278,9 @@ class _VisionTool(ToolClient):
             except (ValueError, KeyError, TypeError):
                 cache_file.unlink(missing_ok=True)  # corrupt cache entry: ask the model again
         if not cached:
-            reading = self._parse(self._generate(images))  # raises -> agent retries
+            text, usage, seconds = self._generate(images)
+            reading = self._parse(text)  # raises -> agent retries
+            reading["usage"], reading["latency_s"] = usage, seconds
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(json.dumps(reading))
 
@@ -273,6 +290,7 @@ class _VisionTool(ToolClient):
             label=reading["label"],
             raw_output={"evidence": reading.get("evidence", ""), "score": reading.get("score"),
                         "fractions": reading.get("fractions"), "model": self.model, "cached": cached,
+                        "usage": reading.get("usage"), "latency_s": reading.get("latency_s"),
                         "images": len(images), "has_before": pre is not None},
         )
 

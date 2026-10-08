@@ -302,6 +302,11 @@ def test_vertex_generate_fn_builds_the_request_correctly(monkeypatch):
     class FakeResponse:
         text = '{"label": "no-damage", "confidence": 1, "evidence": ""}'
 
+        class usage_metadata:                     # what Vertex reports back for billing
+            prompt_token_count = 910
+            candidates_token_count = 70
+            thoughts_token_count = 5
+
     class FakeModels:
         def generate_content(self, model, contents, config):
             seen.update(model=model, contents=contents, config=config)
@@ -316,7 +321,7 @@ def test_vertex_generate_fn_builds_the_request_correctly(monkeypatch):
     gen = make_vertex_generate_fn(project="proj", location="us-central1", model="gemini-2.5-flash")
     out = gen([(b"AAA", "image/jpeg"), (b"BBB", "image/jpeg")], "the prompt", __import__("tools.vision.client", fromlist=["DamageReading"]).DamageReading)
 
-    assert out == FakeResponse.text
+    assert out == (FakeResponse.text, {"prompt_tokens": 910, "output_tokens": 75})   # thinking tokens bill as output
     assert seen["client_kwargs"] == {"vertexai": True, "project": "proj", "location": "us-central1"}
     assert seen["model"] == "gemini-2.5-flash"
     assert len(seen["contents"]) == 3 and seen["contents"][-1] == "the prompt"        # 2 images + prompt
@@ -437,3 +442,49 @@ def test_the_score_reaches_the_record_the_event_and_the_planner(demo, tmp_path):
     assert score_zone([tile])[0] == pytest.approx(0.4, abs=0.001)
     legacy = ToolCallRecord(tool_name="classifier", confidence=0.9, label="major-damage")   # no score: label table
     assert tile_damage_score(tile.model_copy(update={"tool_call_history": [legacy]})) == 2.0
+
+
+# --- measured cost: tokens and latency per call ------------------------------------------------------
+
+
+def test_usage_and_latency_are_recorded_and_survive_the_cache(demo, tmp_path):
+    post, _ = demo
+
+    def model(images, prompt, schema):
+        return json.dumps({"label": "major-damage", "confidence": 0.8, "evidence": "x"}), {"prompt_tokens": 900, "output_tokens": 60}
+
+    tool = damage_tool(model, tmp_path)
+    first = tool.run(str(post))
+    assert first.raw_output["usage"] == {"prompt_tokens": 900, "output_tokens": 60}
+    assert first.raw_output["cached"] is False and first.raw_output["latency_s"] >= 0
+    replay = damage_tool(model, tmp_path).run(str(post))
+    assert replay.raw_output["cached"] is True
+    assert replay.raw_output["usage"] == {"prompt_tokens": 900, "output_tokens": 60}      # what it ORIGINALLY cost
+
+
+def test_a_model_that_reports_no_usage_still_works(demo, tmp_path):
+    post, _ = demo
+    result = damage_tool(FakeModel(), tmp_path).run(str(post))            # returns plain text, no usage
+    assert result.raw_output["usage"] is None and result.label == "major-damage"
+
+
+def test_cost_numbers_reach_the_record_and_the_event(demo, tmp_path):
+    post, _ = demo
+
+    def model(images, prompt, schema):
+        return json.dumps({"label": "minor-damage", "confidence": 0.9, "evidence": "x"}), {"prompt_tokens": 850, "output_tokens": 55}
+
+    agent = PerceptionAgent(tools=[GeminiDamageTool(generate_fn=model, cache_dir=tmp_path / "c")], sleep=lambda s: None)
+    tile = agent.process_tile("t", str(post))
+    rec = tile.tool_call_history[0]
+    assert (rec.prompt_tokens, rec.output_tokens, rec.cached) == (850, 55, False) and rec.latency_s is not None
+    call = tile_summary(tile)["tool_calls"][0]
+    assert (call["prompt_tokens"], call["output_tokens"], call["cached"]) == (850, 55, False)
+
+
+def test_mock_tools_record_no_cost_fields():
+    from tools.classifier.client import ClassifierClient
+
+    tile = PerceptionAgent(tools=[ClassifierClient()], sleep=lambda s: None).process_tile("t", "/x/t.png")
+    rec = tile.tool_call_history[0]
+    assert (rec.latency_s, rec.prompt_tokens, rec.output_tokens, rec.cached) == (None, None, None, None)

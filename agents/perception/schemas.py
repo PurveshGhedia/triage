@@ -39,6 +39,12 @@ class ToolCallRecord(BaseModel):
     # Optional finer-grained damage estimate on the 0-3 scale (vision tools); scoring prefers it
     # over the coarse label when present.
     score: float | None = None
+    # Measured cost of the call that produced this reading (vision tools): seconds, billed tokens, and
+    # whether it was replayed from the answer cache (a replay costs nothing now).
+    latency_s: float | None = None
+    prompt_tokens: int | None = None
+    output_tokens: int | None = None
+    cached: bool | None = None
     called_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
@@ -52,6 +58,10 @@ class ToolCallRecord(BaseModel):
             selection_reasoning=selection_reasoning,
             evidence=(getattr(result, "raw_output", None) or {}).get("evidence"),
             score=(getattr(result, "raw_output", None) or {}).get("score"),
+            latency_s=(getattr(result, "raw_output", None) or {}).get("latency_s"),
+            prompt_tokens=((getattr(result, "raw_output", None) or {}).get("usage") or {}).get("prompt_tokens"),
+            output_tokens=((getattr(result, "raw_output", None) or {}).get("usage") or {}).get("output_tokens"),
+            cached=(getattr(result, "raw_output", None) or {}).get("cached"),
         )
 
 

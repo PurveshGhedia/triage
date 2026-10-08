@@ -77,6 +77,10 @@ def tile_summary(a: TileAssessment) -> dict:
                 "reasoning": r.selection_reasoning,
                 "evidence": r.evidence,
                 "score": r.score,
+                "latency_s": r.latency_s,
+                "prompt_tokens": r.prompt_tokens,
+                "output_tokens": r.output_tokens,
+                "cached": r.cached,
             }
             for r in a.tool_call_history
         ],
