@@ -34,4 +34,4 @@ infra/terraform/*.tfvars
 notebooks/*.ipynb_checkpoints/
 
 # OS
-.DS_Store
+.DS_Storedeploy/_context/
