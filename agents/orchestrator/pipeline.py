@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from agents.orchestrator.audit_log import redact
 from agents.orchestrator.events import EventLog
 from agents.orchestrator.models import PlanOutcome, TileSpec
 from agents.orchestrator.ports import PerceptionPort, PlannerPort
@@ -69,6 +70,16 @@ def tile_summary(a: TileAssessment) -> dict:
         "longitude": a.longitude,
         "failure_reason": a.failure_reason,
         "tool_errors": len(a.tool_errors),
+        "errors": [
+            {
+                "tool": e.tool_name,
+                "attempt": e.attempt,
+                "error_type": e.error_type,
+                "message": redact(e.message),
+                "failed_at": e.failed_at.isoformat(),
+            }
+            for e in a.tool_errors
+        ],
         "tool_calls": [
             {
                 "tool": r.tool_name,
