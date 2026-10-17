@@ -1,0 +1,10 @@
+Run 20261010-141409-8ed6: 16 tiles, wall-clock 132.2 s
+  vision calls: 48 (3.0 per tile): 32 billed now, 16 replayed from cache (free now)
+  tokens billed: 25,472 in, 1,503 out
+  COST this run: $0.0114  (at $0.3/M in, $2.5/M out)  ->  0.00071 USD per tile
+  (replayed answers originally cost $0.00567)
+  per call: mean 3.93 s, median 3.891 s, p95 4.921 s, max 5.16 s
+  TIME per tile: 8.26 s wall-clock (parallel); 7.85 s of model time if done one at a time
+    classifier   16 calls   13,504 in     820 out  $0.0061
+    detector     16 calls   11,968 in     683 out  $0.0053
+  PROJECTION for 1,000 tiles with 4 workers: about $0.71 and 32.7 minutes (assumes the same per-tile behaviour and linear speed-up)

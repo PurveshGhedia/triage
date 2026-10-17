@@ -1,0 +1,22 @@
+20261010-141409-8ed6  hurricane-harvey  tools=vision
+  tiles compared: 14  (escalated, not scored: 0; skipped for having < 10 labelled buildings: 2)
+  truth in these tiles: 7 damaged (mean >= 0.5), 7 undamaged
+  tile rank correlation (Spearman): 0.764   (1 = same order as the experts, 0 = unrelated)
+  mean abs error: 0.22  vs constant-guess baseline 0.96   (0-3 scale; lower is better)
+  tiles within one damage level: 0.93
+  zone rank correlation (Spearman, 4 zones): 1.0   (too few zones to read much into)
+  worst disagreements (predicted vs xBD mean damage, 0-3):
+      tile   pred  truth  worst  bldgs   error
+       162    2.0    0.0      0     15    +2.0
+       202    2.0   1.48      2    116   +0.52
+       394    2.0   2.17      3    160   -0.17
+       453    2.0   1.83      2    127   +0.17
+       458    2.0   1.92      2     83   +0.08
+       173    0.0   0.06      1    111   -0.06
+       460    2.0   2.05      3    135   -0.05
+       163    2.0   2.03      3    159   -0.03
+       464    2.0    2.0      2     15    +0.0
+       155    0.0    0.0      0     35    +0.0
+       355    0.0    0.0      0    151    +0.0
+       465    0.0    0.0      0    195    +0.0
+  over-calls (pred > truth by >0.5): 2   under-calls: 0   of 14 tiles
